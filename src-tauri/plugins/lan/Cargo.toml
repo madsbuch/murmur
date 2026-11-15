@@ -17,4 +17,8 @@ mdns-sd = { version = "0.21.7", default-features = false }
 tauri-plugin = { version = "2.7.2", features = ["build"] }
 
 [lints.rust]
+unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)', 'cfg(desktop)'] }
+
+[lints.clippy]
+as_conversions = "forbid"

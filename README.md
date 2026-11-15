@@ -9,6 +9,7 @@ No accounts, hosted backend, relay, or required runtime cloud services. Internet
 - Latest stable Tauri **2.12.5**; JavaScript API and CLI **2.12.4**, pinned with lockfiles. Tauri 3 is currently prerelease.
 - Plain TypeScript, CSS, and Vite. No frontend framework.
 - Rust **Automerge 0.12.0** for text CRDTs, local persistence, and synchronization.
+- **Diesel 2.4.0** with bundled **SQLite** for all native durable data: device identity, active network, saved networks and secrets, Automerge history, and recovery drafts.
 - Android `NsdManager`, iOS Bonjour `NetService`, desktop `mdns-sd` for `_murmur._tcp` discovery.
 - Tauri's official barcode scanner for Android/iOS; QR codes generated locally. Android substitutes the bundled `com.google.mlkit:barcode-scanning:17.3.0` detector for the plugin's default downloaded model, so scanning works on first launch without an Internet connection.
 
@@ -35,13 +36,14 @@ The generated Android and Xcode projects are included in `src-tauri/gen/`. The A
 
 Keep the Android root Gradle scanner dependency substitution, the ML Kit registrar constructor rules in `app/proguard-rules.pro`, and the `android:allowBackup="false"` manifest setting if regenerating the native project. The constructor rules prevent release optimization from removing the classes' reflective entry points and crashing the scanner after camera permission is granted.
 
-iOS device builds need an Apple development team and signing certificate. Set `APPLE_DEVELOPMENT_TEAM` or `bundle.iOS.developmentTeam` in the Tauri configuration. An unsigned simulator build can be made with:
+iOS device distribution needs an Apple development team and signing certificate. Set `APPLE_DEVELOPMENT_TEAM` or `bundle.iOS.developmentTeam` in the Tauri configuration. Xcode 27 also requires Rust's LLVM tools to export the Swift plugin entry points. To build an unsigned device archive:
 
 ```sh
-npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci
+rustup component add llvm-tools
+npm run tauri -- ios build --target aarch64 --no-sign --archive-only --ci
 ```
 
-`npm run dev` opens an explicitly labeled **browser preview**. Its separate localStorage adapter supports interface development only; native LAN sync and camera scanning run in the Tauri app.
+`npm run dev` opens an explicitly labeled, temporary **browser preview**. Its in-memory adapter supports interface development; reloading clears the demo. Durable SQLite storage, LAN sync, and camera scanning run in the Tauri app.
 
 ## GitHub releases and permanent signing
 
@@ -78,7 +80,9 @@ Switching networks retains the previous network's data on the device. Save its i
 
 The Rust core is the source of truth. A network has one Automerge document with independent note maps and CRDT text objects. All devices construct the same initial history. Each editor save forks the exact revision it displayed, applies text differences, and merges that fork into the current document. This preserves edits arriving from another device while you type. Deletes use permanent tombstones so a concurrent text edit cannot resurrect a note.
 
-The store writes a temporary file, flushes it, atomically renames it, and flushes the directory before reporting a successful save. Files live in Tauri's app data directory. The frontend keeps an unsaved draft for recovery during abrupt shutdown.
+The Rust store uses Diesel to write `murmur.sqlite3` in Tauri's app data directory. Embedded migrations create the schema. SQLite transactions, WAL journaling, and full synchronous writes keep note commits and network changes durable. Each network retains its complete Automerge document as a binary value, including edit history and deletion tombstones. Recovery drafts also live in SQLite. The app creates database files with private permissions on Unix platforms.
+
+On upgrade, the store validates and imports the previous JSON identity and all saved network files in one transaction. Original files are moved to `legacy-json-backup` only after the database commit succeeds; a failed import leaves them intact. These files are inert migration backups. Existing WebView recovery drafts are validated and imported once, without replacing a newer database draft, before their old storage entry is removed.
 
 Discovery advertises only a protocol version, network ID, device ID, and an ephemeral TCP port. The shared secret is never advertised. Peers exchange length-bounded, XChaCha20-Poly1305 encrypted and authenticated Automerge snapshots over TCP. Protocol, network, and message direction are authenticated; invalid keys and malformed documents are rejected. Snapshot exchange is intentionally simple for a small notebook. CRDT merging makes duplicates and old snapshots harmless.
 
@@ -99,17 +103,20 @@ Synchronization retries every five seconds, after edits/discovery, and when the 
 npm run build
 npm test
 npm run test:ui
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --workspace --all-targets --no-deps -- -D warnings
 ```
 
-The Rust suite exercises independent creation, concurrent text edits, stale editor saves, delete-versus-edit, persistence/rejoin, malformed invitations, authenticated encryption, real loopback TCP exchange, reconnect, and automatic sync. Playwright exercises the mobile-sized UI, local persistence, QR display, switching/rejoining, deletion, and draft rebasing. If Chromium is missing, run `npx playwright install chromium`.
+The Rust suite exercises SQLite migration and rollback, private file permissions, durable drafts, atomic draft cleanup, concurrent edits, persistence/rejoin, malformed invitations, authenticated encryption, loopback TCP exchange, reconnect, and automatic sync. Playwright exercises phone and tablet layouts, QR display, switching/rejoining, deletion, draft rebasing, runtime validation, recovery failures and retries, and the temporary browser preview. Native IPC mocks cover UI failure cases; Rust tests verify the actual database. If Chromium is missing, run `npx playwright install chromium`.
+
+Safety rules apply to Murmur's own Rust and TypeScript code. Both Rust crates forbid `unsafe` code and `as` conversions; numeric conversions are checked or lossless. TypeScript uses strict indexed and optional-property checking, runtime validation of IPC and parsed data, and type-aware ESLint rules that reject `any`, assertions, non-null assertions, and implicit value coercions. `npm run build` runs these checks, and CI also runs Clippy for desktop and Android code. Dependencies retain their own implementations, including Diesel/SQLite's native internals.
 
 Local release builds and GitHub Actions run `scripts/check-android-scanner.py` against the signed APK before distribution. It checks that the release retains the manifest-discovered ML Kit constructors and includes its offline models. Version 0.1.1 fixes a release-only camera crash caused by R8 removing those constructors; the check rejects the affected 0.1.0 APK.
 
 Test the **signed release APK** on an unlocked, disposable English-language Android emulator with a back camera using `python3 scripts/test-android-scanner.py --serial emulator-5580 --apk out/Murmur-android-universal.apk`. This installs an update without clearing notes, resets camera permission, grants it through the system dialog, checks that the bundled detector initializes and the camera streams while the app stays alive, and cancels/reopens the scanner. It rejects physical devices and debuggable APKs, and does not print notebook contents or raw logs. This catches release-only shrinking failures that browser and debug-build tests cannot cover.
 
-Verified on November 15, 2026: production frontend build, 12 Rust tests, 9 Playwright tests, Android debug arm64 APK/AAB, and an unsigned iOS device archive. On an Android emulator, the real app created a network, saved notes through Rust, restored them after force-stop/relaunch, generated a QR invitation, and initialized the camera scanner with Wi-Fi/mobile data disabled. The simulator build could not run with this machine's installed runtime/SDK combination; the full iOS app was compiled against the device SDK instead.
+Verified on November 15, 2026 for version 0.2.0: production frontend build, 18 Rust tests, 17 Playwright tests, strict desktop/Android Clippy, a signed ARM64/ARMv7 release APK, and an unsigned iOS device archive. An Android emulator upgraded a saved 0.1.1 notebook to SQLite with its network identity and text intact, then retained a new edit across force-stop/relaunch. TypeScript safety checks also rejected deliberate examples of nine prohibited patterns. The iOS archive supports iPhone and iPad; physical iOS behavior still requires device testing.
 
-The signed, optimized Android 0.1.1 APK also passed the camera smoke test with Wi-Fi and mobile data disabled: first permission grant, bundled detector initialization, sustained preview, cancellation, and reopening. The same test reproduced the crash in the published 0.1.0 APK.
+The signed, optimized Android 0.2.0 APK also passed the camera smoke test with Wi-Fi and mobile data disabled: first permission grant, bundled detector initialization, sustained preview, cancellation, and reopening. The same test reproduced the crash in the published 0.1.0 APK.
 
 For physical-device acceptance, run the two-phone flow above on Android ↔ iOS, deny and then grant LAN/camera permissions, toggle Wi-Fi, background/foreground both apps, and restart both with notes saved. Simulator and loopback tests cannot establish that a particular Wi-Fi network permits Bonjour or that physical camera scanning works.
 
@@ -118,6 +125,7 @@ For physical-device acceptance, run the two-phone flow above on Android ↔ iOS,
 - `src/`: small interface, editor save queue, QR screens, browser preview adapter.
 - `native.ts`: discovery lifecycle and peer events.
 - `src-tauri/src/engine.rs`: Automerge document and durable local store.
+- `src-tauri/src/storage.rs`, `schema.rs`, and `migrations/`: Diesel SQLite storage and schema migrations.
 - `src-tauri/src/transport.rs`: encrypted peer protocol and retries.
 - `src-tauri/plugins/lan/`: native Android/iOS discovery and desktop fallback.
 - `src-tauri/Info.ios.plist`: camera and Bonjour privacy declarations.

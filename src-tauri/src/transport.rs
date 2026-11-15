@@ -208,7 +208,7 @@ fn decrypt(frame: &[u8], network_id: &str, secret: &[u8; 32], role: u8) -> Resul
         .map_err(|_| "The peer could not authenticate with this network.".into())
 }
 async fn read_frame(socket: &mut TcpStream) -> Result<Vec<u8>> {
-    let length = socket.read_u32().await.map_err(err)? as usize;
+    let length = usize::try_from(socket.read_u32().await.map_err(err)?).map_err(err)?;
     if !(HEADER_BYTES + 16..=MAX_FRAME).contains(&length) {
         return Err("Invalid sync frame size.".into());
     }
@@ -220,7 +220,8 @@ async fn write_frame(socket: &mut TcpStream, frame: &[u8]) -> Result<()> {
     if frame.len() > MAX_FRAME {
         return Err("Sync frame exceeds the size limit.".into());
     }
-    socket.write_u32(frame.len() as u32).await.map_err(err)?;
+    let length = u32::try_from(frame.len()).map_err(err)?;
+    socket.write_u32(length).await.map_err(err)?;
     socket.write_all(frame).await.map_err(err)?;
     socket.flush().await.map_err(err)
 }

@@ -1,7 +1,9 @@
 mod engine;
+mod schema;
+mod storage;
 mod transport;
 
-use engine::{Engine, Peer, Snapshot};
+use engine::{DraftBackup, Engine, Peer, Snapshot};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -49,6 +51,26 @@ fn delete_note(id: String, state: State<'_, AppState>) -> Result<Snapshot, Strin
 }
 
 #[tauri::command]
+fn get_draft(state: State<'_, AppState>) -> Result<Option<DraftBackup>, String> {
+    state.get_draft()
+}
+
+#[tauri::command]
+fn save_draft(draft: DraftBackup, state: State<'_, AppState>) -> Result<(), String> {
+    state.save_draft(draft)
+}
+
+#[tauri::command]
+fn import_draft(draft: DraftBackup, state: State<'_, AppState>) -> Result<(), String> {
+    state.import_draft(draft)
+}
+
+#[tauri::command]
+fn clear_draft(network_id: String, id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.clear_draft(network_id, id)
+}
+
+#[tauri::command]
 fn peer_discovered(peer: Peer, state: State<'_, AppState>) -> Result<(), String> {
     state.peer_discovered(peer)
 }
@@ -60,7 +82,7 @@ fn sync_now(state: State<'_, AppState>) -> Result<Snapshot, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_lan::init())
         .setup(|app| {
             #[cfg(mobile)]
@@ -79,9 +101,16 @@ pub fn run() {
             create_note,
             update_note,
             delete_note,
+            get_draft,
+            save_draft,
+            import_draft,
+            clear_draft,
             peer_discovered,
             sync_now
         ])
-        .run(tauri::generate_context!())
-        .expect("Murmur could not start");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        eprintln!("Murmur could not start: {error}");
+        std::process::exit(1);
+    }
 }

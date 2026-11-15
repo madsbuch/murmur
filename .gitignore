@@ -31,3 +31,5 @@ key.properties
 keystore.properties
 __pycache__/
 *.pyc
+murmur.sqlite3*
+legacy-json-backup/

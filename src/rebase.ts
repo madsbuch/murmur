@@ -10,8 +10,8 @@ export function rebaseDraft(base: string, local: string, remote: string): string
     const added = new Map<number, string[]>();
     let offset = 0;
     for (const part of diffArrays(chars, Array.from(next))) {
-      if (part.added) added.set(offset, [...(added.get(offset) ?? []), ...part.value]);
-      else if (part.removed) for (const _ of part.value) removed.add(offset++);
+      if (part.added === true) added.set(offset, [...(added.get(offset) ?? []), ...part.value]);
+      else if (part.removed === true) for (let i = 0; i < part.value.length; i++) removed.add(offset++);
       else offset += part.value.length;
     }
     return { removed, added };
@@ -21,7 +21,8 @@ export function rebaseDraft(base: string, local: string, remote: string): string
   const result: string[] = [];
   for (let i = 0; i <= chars.length; i++) {
     result.push(...(peer.added.get(i) ?? []), ...(own.added.get(i) ?? []));
-    if (i < chars.length && !own.removed.has(i) && !peer.removed.has(i)) result.push(chars[i]!);
+    const char = chars[i];
+    if (char !== undefined && !own.removed.has(i) && !peer.removed.has(i)) result.push(char);
   }
   return result.join('');
 }
@@ -31,8 +32,8 @@ export function mapCaret(before: string, after: string, caret: number): number {
   let oldOffset = 0;
   let newOffset = 0;
   for (const part of diffChars(before, after)) {
-    if (part.added) newOffset += part.value.length;
-    else if (part.removed) {
+    if (part.added === true) newOffset += part.value.length;
+    else if (part.removed === true) {
       if (caret <= oldOffset + part.value.length) return newOffset;
       oldOffset += part.value.length;
     } else {

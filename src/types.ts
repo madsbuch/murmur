@@ -19,3 +19,11 @@ export interface Snapshot {
   deviceId: string;
   listenerPort: number;
 }
+
+export interface DraftBackup {
+  networkId: string;
+  id: string;
+  title: string;
+  body: string;
+  baseHeads: string[];
+}

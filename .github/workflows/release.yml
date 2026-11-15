@@ -37,6 +37,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -58,6 +60,9 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --locked
+
+      - name: Check Rust safety rules
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --workspace --all-targets --no-deps -- -D warnings
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
@@ -93,6 +98,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
+          components: clippy
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -109,6 +115,15 @@ jobs:
       # bundled offline scanner, permissions, identity, and keyboard settings.
       - name: Build the release APK for 64-bit and 32-bit ARM
         run: bash scripts/ci-build-android.sh
+
+      - name: Check Rust safety rules in mobile code
+        run: |
+          toolchain="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$toolchain/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$toolchain/llvm-ar"
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --workspace --lib --release \
+            --target aarch64-linux-android --no-deps -- -D warnings
 
       - name: Sign with the permanent Murmur key
         env:
