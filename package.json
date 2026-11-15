@@ -1,6 +1,6 @@
 {
   "name": "murmur",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Notes, kept close. Offline notes shared directly with nearby devices.",
@@ -11,7 +11,7 @@
     "tauri": "tauri",
     "android": "node scripts/mobile.mjs android dev",
     "android:build": "node scripts/mobile.mjs android build --debug --target aarch64",
-    "android:release": "node scripts/mobile.mjs android build --apk --target aarch64 --target armv7 && python3 scripts/android-signing.py sign",
+    "android:release": "node scripts/mobile.mjs android build --apk --target aarch64 --target armv7 && python3 scripts/android-signing.py sign && python3 scripts/check-android-scanner.py --apk out/Murmur-android-universal.apk",
     "signing:verify": "python3 scripts/android-signing.py verify",
     "ios": "node scripts/mobile.mjs ios dev",
     "ios:build": "node scripts/mobile.mjs ios build --debug",

@@ -118,6 +118,9 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: bash scripts/ci-sign-android.sh
 
+      - name: Check the optimized offline scanner in the signed APK
+        run: python3 scripts/check-android-scanner.py --apk out/Murmur-android-universal.apk
+
       - uses: actions/upload-artifact@v7
         with:
           name: android

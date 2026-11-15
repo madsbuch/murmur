@@ -33,7 +33,7 @@ npm run ios           # iOS device / simulator
 
 The generated Android and Xcode projects are included in `src-tauri/gen/`. The Android helper detects the usual SDK, NDK, and Android Studio JDK paths; environment variables `ANDROID_HOME`, `NDK_HOME`, and `JAVA_HOME` take precedence. If regenerating, run `node scripts/mobile.mjs android init` or `npm run tauri -- ios init`.
 
-Keep the Android root Gradle scanner dependency substitution and `android:allowBackup="false"` manifest setting if regenerating the native project.
+Keep the Android root Gradle scanner dependency substitution, the ML Kit registrar constructor rules in `app/proguard-rules.pro`, and the `android:allowBackup="false"` manifest setting if regenerating the native project. The constructor rules prevent release optimization from removing the classes' reflective entry points and crashing the scanner after camera permission is granted.
 
 iOS device builds need an Apple development team and signing certificate. Set `APPLE_DEVELOPMENT_TEAM` or `bundle.iOS.developmentTeam` in the Tauri configuration. An unsigned simulator build can be made with:
 
@@ -103,7 +103,13 @@ npm run test:ui
 
 The Rust suite exercises independent creation, concurrent text edits, stale editor saves, delete-versus-edit, persistence/rejoin, malformed invitations, authenticated encryption, real loopback TCP exchange, reconnect, and automatic sync. Playwright exercises the mobile-sized UI, local persistence, QR display, switching/rejoining, deletion, and draft rebasing. If Chromium is missing, run `npx playwright install chromium`.
 
+Local release builds and GitHub Actions run `scripts/check-android-scanner.py` against the signed APK before distribution. It checks that the release retains the manifest-discovered ML Kit constructors and includes its offline models. Version 0.1.1 fixes a release-only camera crash caused by R8 removing those constructors; the check rejects the affected 0.1.0 APK.
+
+Test the **signed release APK** on an unlocked, disposable English-language Android emulator with a back camera using `python3 scripts/test-android-scanner.py --serial emulator-5580 --apk out/Murmur-android-universal.apk`. This installs an update without clearing notes, resets camera permission, grants it through the system dialog, checks that the bundled detector initializes and the camera streams while the app stays alive, and cancels/reopens the scanner. It rejects physical devices and debuggable APKs, and does not print notebook contents or raw logs. This catches release-only shrinking failures that browser and debug-build tests cannot cover.
+
 Verified on November 15, 2026: production frontend build, 12 Rust tests, 9 Playwright tests, Android debug arm64 APK/AAB, and an unsigned iOS device archive. On an Android emulator, the real app created a network, saved notes through Rust, restored them after force-stop/relaunch, generated a QR invitation, and initialized the camera scanner with Wi-Fi/mobile data disabled. The simulator build could not run with this machine's installed runtime/SDK combination; the full iOS app was compiled against the device SDK instead.
+
+The signed, optimized Android 0.1.1 APK also passed the camera smoke test with Wi-Fi and mobile data disabled: first permission grant, bundled detector initialization, sustained preview, cancellation, and reopening. The same test reproduced the crash in the published 0.1.0 APK.
 
 For physical-device acceptance, run the two-phone flow above on Android ↔ iOS, deny and then grant LAN/camera permissions, toggle Wi-Fi, background/foreground both apps, and restart both with notes saved. Simulator and loopback tests cannot establish that a particular Wi-Fi network permits Bonjour or that physical camera scanning works.
 

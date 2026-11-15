@@ -1,6 +1,6 @@
 [package]
 name = "murmur"
-version = "0.1.0"
+version = "0.1.1"
 description = "Notes, kept close. Offline peer-to-peer notes."
 edition = "2021"
 rust-version = "1.90"
