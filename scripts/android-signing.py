@@ -129,7 +129,7 @@ def sign(directory, apk):
         run([tools / "apksigner", "sign", "--ks", keystore, "--ks-key-alias", config["alias"],
              "--ks-pass", "env:MURMUR_STORE_PASSWORD", "--key-pass", "env:MURMUR_STORE_PASSWORD",
              "--out", signed, aligned], env=env)
-        report = run([tools / "apksigner", "verify", "--print-certs", signed]).decode()
+        report = run([tools / "apksigner", "verify", "--print-certs", signed], env=env).decode()
         if config["certificate_sha256"].lower() not in report.replace(":", "").lower():
             raise RuntimeError("Signed APK fingerprint does not match Murmur's saved signing identity.")
         print(f"Signed and verified {signed}")
