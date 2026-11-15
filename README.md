@@ -83,7 +83,11 @@ Switching networks retains the previous network's data on the device. Save its i
 
 ## Shared files
 
-Open **Files → Add files** and select pictures, PDFs, or other files from the system picker. Files are copied into the local SQLite database and remain available offline. Other devices receive the file metadata first, show **Waiting for a nearby device**, then automatically fetch and verify the content. Images have previews; **Save file** exports a copy through the system save picker so it can be opened in another app. Cancelling the picker leaves the shared copy intact.
+Open **Files → Add files** and select tracks, videos, pictures, documents, or other files from the system picker. Files are copied into the local SQLite database and remain available offline. Other devices receive the file metadata first, show **Waiting for a nearby device**, then automatically fetch and verify the content. Tap a file to preview it: audio and video have built-in playback and seeking controls, pictures open at full size, and text and Markdown files can be read directly in Murmur. Markdown previews show headings, lists, tables, links, and code blocks. Text previews show the first 256 KiB of large files.
+
+Playback starts when you press Play and stops when you close the preview. Supported audio/video codecs depend on the device; an unreadable format shows an explanation. PDFs and other formats without a built-in preview still offer **Save file**, which exports a copy through the system save picker so it can be opened in another app. Cancelling the picker leaves the shared copy intact.
+
+Choose **Paste image** in Files to add an image from the system clipboard, or use **⌘V / Ctrl+V** while Files is open. Open a picture and choose **Copy image** to paste it into another app. Copying uses the full-size image as PNG (the current frame for animated images), and clipboard images are limited to 25 MiB and 40 million pixels on native platforms. Clipboard access happens only when requested; it is never polled. Text pasting in notes continues to work normally. Browser clipboard actions may require permission from the browser.
 
 Files are immutable: importing a changed file creates a new entry. Deleting an entry propagates to peers; the final reference to its content is removed from SQLite. Files are limited to 25 MiB each, 250 MiB of unique live contents per network, and 500 entries including deletion history. Large transfers retry from the beginning after interruption.
 
@@ -100,6 +104,8 @@ With an active network, Murmur saves any note being edited, imports the pending 
 The incoming inbox holds at most 32 files and 100 MiB, with the same 25 MiB per-file limit. Native handoff queues and the app inbox use SQLite; handoff receipts prevent a repeated delivery from duplicating an accepted batch. Importing the pending app inbox into a network is atomic. A source share extension can still report that only some selected files were saved if a later file fails; check its result before closing it. Files must be provided as readable file/image attachments. Folders, text-only messages, and web-link-only shares are outside this feature's scope. Murmur does not fetch remote attachments itself.
 
 ## How synchronization works
+
+Notes support Markdown. Use **Write** to edit the source and **Preview** to read its formatting; switching views preserves the text and its normal autosave behavior. The original Markdown text synchronizes between devices. Rendering happens locally, raw HTML stays inert, and embedded remote images are shown as descriptions without network requests.
 
 The Rust core is the source of truth. A network has one Automerge document with independent note maps and CRDT text objects. All devices construct the same initial history. Each editor save forks the exact revision it displayed, applies text differences, and merges that fork into the current document. This preserves edits arriving from another device while you type. Deletes use permanent tombstones so a concurrent text edit cannot resurrect a note.
 
@@ -150,6 +156,8 @@ For physical-device acceptance, run the two-phone flow above on Android ↔ iOS,
 
 - `src/main.ts`, `bridge.ts`, `types.ts`, and `validation.ts`: interface, note recovery, incoming-share queue actions, and validated native IPC.
 - `src/files.ts`, `theme.ts`, and `invitations.ts`: bounded image thumbnails, appearance, and preview word-invitation compatibility.
+- `src/file-preview.ts` and `markdown.ts`: local media/text previews with cleanup, file type detection, and sanitized Markdown rendering for notes and files.
+- `src/clipboard.ts` and `src-tauri/src/clipboard.rs`: image clipboard actions, PNG conversion, and native desktop clipboard integration; Android/iOS use their existing `ShareInboxPlugin` bridges.
 - `native.ts`: discovery lifecycle and peer events.
 - `src-tauri/src/engine.rs`: Automerge document and durable local store.
 - `src-tauri/src/storage.rs`, `schema.rs`, and `migrations/`: Diesel SQLite storage and schema migrations.

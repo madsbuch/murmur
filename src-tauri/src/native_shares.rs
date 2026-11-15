@@ -1,5 +1,7 @@
 use crate::{engine::Engine, incoming};
-use std::{path::PathBuf, sync::Arc};
+#[cfg(not(target_os = "ios"))]
+use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::AppHandle;
 static INBOX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -36,9 +38,37 @@ mod android {
             .map_err(|error| error.to_string())?;
         Ok(Some(PathBuf::from(location.path)))
     }
+
+    pub async fn read_clipboard(app: &AppHandle) -> Result<crate::files::FileContent, String> {
+        let inbox = app
+            .try_state::<Inbox>()
+            .ok_or("The clipboard is unavailable")?;
+        inbox
+            .0
+            .run_mobile_plugin_async("readClipboardImage", serde_json::json!({}))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn write_clipboard(app: &AppHandle, data: String) -> Result<(), String> {
+        let inbox = app
+            .try_state::<Inbox>()
+            .ok_or("The clipboard is unavailable")?;
+        inbox
+            .0
+            .run_mobile_plugin_async::<serde_json::Value>(
+                "writeClipboardImage",
+                serde_json::json!({ "dataBase64": data }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 #[cfg(target_os = "android")]
 pub use android::init;
+#[cfg(target_os = "android")]
+pub use android::{read_clipboard, write_clipboard};
 
 pub async fn refresh(app: &AppHandle, engine: Arc<Engine>) -> Result<(), String> {
     let _guard = INBOX_LOCK.lock().await;

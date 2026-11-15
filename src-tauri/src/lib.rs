@@ -2,6 +2,7 @@
 mod appearance;
 #[cfg(target_os = "ios")]
 mod apple_shares;
+mod clipboard;
 mod engine;
 mod files;
 mod incoming;
@@ -16,6 +17,16 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 
 type AppState = Arc<Engine>;
+
+#[tauri::command]
+async fn read_clipboard_image(app: tauri::AppHandle) -> Result<FileContent, String> {
+    clipboard::read(app).await
+}
+
+#[tauri::command]
+async fn write_clipboard_image(app: tauri::AppHandle, data_base64: String) -> Result<(), String> {
+    clipboard::write(app, data_base64).await
+}
 
 #[tauri::command]
 async fn get_pending_shares(
@@ -199,6 +210,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_clipboard_manager::init())?;
             #[cfg(target_os = "android")]
             app.handle().plugin(appearance::init())?;
             #[cfg(target_os = "android")]
@@ -240,6 +254,8 @@ pub fn run() {
             delete_note,
             import_file,
             read_file,
+            read_clipboard_image,
+            write_clipboard_image,
             delete_file,
             get_settings,
             set_theme,
