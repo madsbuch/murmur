@@ -1,0 +1,7 @@
+.tauri/
+android/.tauri/
+android/build/
+ios/.build*/
+ios/Package.resolved
+target/
+Cargo.lock

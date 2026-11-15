@@ -1,0 +1,3 @@
+[default]
+description = "Advertise and discover Murmur peers on the local network."
+permissions = ["allow-start", "allow-stop", "allow-is-mobile", "allow-register-listener", "allow-remove-listener"]

@@ -1,0 +1,35 @@
+{
+  "name": "murmur",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Notes, kept close. Offline notes shared directly with nearby devices.",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "tauri": "tauri",
+    "android": "node scripts/mobile.mjs android dev",
+    "android:build": "node scripts/mobile.mjs android build --debug --target aarch64",
+    "android:release": "node scripts/mobile.mjs android build --apk --target aarch64 --target armv7 && python3 scripts/android-signing.py sign",
+    "signing:verify": "python3 scripts/android-signing.py verify",
+    "ios": "node scripts/mobile.mjs ios dev",
+    "ios:build": "node scripts/mobile.mjs ios build --debug",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "playwright test"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-barcode-scanner": "2.5.3",
+    "diff": "9.0.0",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}

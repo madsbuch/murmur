@@ -1,0 +1,191 @@
+name: Build and publish latest
+
+# Same rolling-release flow as Learn Polish: PRs test; main builds and publishes.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libdbus-1-dev libssl-dev pkg-config
+
+      - run: npm ci
+
+      - name: Type-check and build the frontend
+        run: npm run build
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Phone and tablet UI tests
+        run: npm run test:ui
+
+  # Build in parallel with tests; publishing waits for both jobs to pass.
+  android:
+    name: Android (signed APK)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;36.0.0 platforms;android-36 platforms;android-37.0 ndk;28.0.12674087"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - run: npm ci
+
+      - name: Locate the NDK
+        run: echo "NDK_HOME=$ANDROID_HOME/ndk/28.0.12674087" >> "$GITHUB_ENV"
+
+      # The native project is checked in: regenerating it would remove the
+      # bundled offline scanner, permissions, identity, and keyboard settings.
+      - name: Build the release APK for 64-bit and 32-bit ARM
+        run: npm run tauri -- android build --ci --apk --target aarch64 --target armv7
+
+      - name: Sign with the permanent Murmur key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash scripts/ci-sign-android.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish latest
+    needs: [check, android]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: android
+          path: release
+
+      - name: Move the latest tag to this commit
+        run: |
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin refs/tags/latest
+
+      - name: Compose release notes
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          cat > notes.md <<'HEADER'
+          Rolling build of `main`, replaced after each successful push.
+
+          ### Install
+
+          Download **Murmur-android-universal.apk** and open it on your Android
+          phone or tablet. Allow installation from this source when asked.
+
+          This APK supports 64-bit and 32-bit ARM devices and is signed with
+          Murmur's permanent release key. Future release APKs can update it
+          while keeping your notes. A development APK signed with Android's
+          debug key cannot be upgraded directly to this release APK.
+
+          Camera access is used to scan invitations. Allow local network access
+          when requested, and open Murmur on the same Wi-Fi as your other device
+          to synchronize. Notes and the bundled QR scanner work offline.
+
+          `SHA256SUMS` contains the APK's download checksum.
+
+          HEADER
+          {
+            echo '### This build'
+            echo
+            printf '%s\n' "- Commit \`${GITHUB_SHA::7}\` — ${COMMIT_MESSAGE:-manual run}" | head -n 1
+            echo "- Built $(date -u '+%Y-%m-%d %H:%M UTC')"
+          } >> notes.md
+
+      # Match Learn Polish's rolling latest release: replace old release assets.
+      - name: Replace the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete latest --yes --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release create latest release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --latest \
+            --title "Latest build" \
+            --notes-file notes.md
