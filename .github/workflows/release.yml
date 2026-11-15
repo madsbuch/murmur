@@ -108,7 +108,7 @@ jobs:
       # The native project is checked in: regenerating it would remove the
       # bundled offline scanner, permissions, identity, and keyboard settings.
       - name: Build the release APK for 64-bit and 32-bit ARM
-        run: npm run tauri -- android build --ci --apk --target aarch64 --target armv7
+        run: bash scripts/ci-build-android.sh
 
       - name: Sign with the permanent Murmur key
         env:
