@@ -1,5 +1,8 @@
 //! The single durable store. Automerge history is retained byte-for-byte in SQLite.
-use crate::schema::{app_state, networks, recovery_drafts};
+use crate::incoming::{PendingShare, QueuedShare, MAX_PENDING_BYTES, MAX_PENDING_ITEMS};
+use crate::schema::{
+    app_state, file_blobs, incoming_shares, networks, recovery_drafts, settings, share_receipts,
+};
 use diesel::{connection::SimpleConnection, prelude::*, sqlite::SqliteConnection};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::{fs, path::Path};
@@ -39,6 +42,16 @@ pub(crate) struct StoredDraft {
     pub base_heads: String,
 }
 
+#[derive(Queryable, Selectable, Insertable, AsChangeset)]
+#[diesel(table_name = file_blobs, primary_key(network_id, sha256))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct StoredBlob {
+    pub network_id: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub content: Vec<u8>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum DraftClear<'a> {
     Saved(&'a StoredDraft),
@@ -50,6 +63,100 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    pub fn pending_shares(&mut self) -> Result<Vec<PendingShare>> {
+        incoming_shares::table
+            .order(incoming_shares::created_at.asc())
+            .select((
+                incoming_shares::id,
+                incoming_shares::name,
+                incoming_shares::mime_type,
+                diesel::dsl::sql::<diesel::sql_types::BigInt>("length(content)"),
+            ))
+            .load(&mut self.connection)
+            .map_err(message)
+    }
+
+    pub fn pending_contents(&mut self) -> Result<Vec<QueuedShare>> {
+        incoming_shares::table
+            .order(incoming_shares::created_at.asc())
+            .select(QueuedShare::as_select())
+            .load(&mut self.connection)
+            .map_err(message)
+    }
+
+    pub fn stage_shares(&mut self, shares: &[QueuedShare]) -> Result<()> {
+        let ids: Vec<_> = shares.iter().map(|share| &share.id).collect();
+        let known: std::collections::HashSet<String> = share_receipts::table
+            .filter(share_receipts::id.eq_any(ids))
+            .select(share_receipts::id)
+            .load::<String>(&mut self.connection)
+            .map_err(message)?
+            .into_iter()
+            .collect();
+        let fresh: Vec<_> = shares
+            .iter()
+            .filter(|share| !known.contains(&share.id))
+            .collect();
+        let pending = self.pending_shares()?;
+        let mut size = pending
+            .iter()
+            .try_fold(0u64, |sum, item| {
+                sum.checked_add(u64::try_from(item.size).ok()?)
+            })
+            .ok_or("The share inbox size is invalid.")?;
+        for share in &fresh {
+            size = size
+                .checked_add(u64::try_from(share.content.len()).map_err(message)?)
+                .ok_or("The share inbox is full.")?;
+        }
+        if pending.len() + fresh.len() > MAX_PENDING_ITEMS || size > MAX_PENDING_BYTES {
+            return Err(
+                "The share inbox is full. Import or discard its files before sharing more.".into(),
+            );
+        }
+        self.connection
+            .transaction::<_, diesel::result::Error, _>(|connection| {
+                for share in fresh {
+                    diesel::insert_into(incoming_shares::table)
+                        .values(share)
+                        .execute(connection)?;
+                    diesel::insert_into(share_receipts::table)
+                        .values(share_receipts::id.eq(&share.id))
+                        .execute(connection)?;
+                }
+                Ok(())
+            })
+            .map_err(message)
+    }
+
+    pub fn discard_pending_shares(&mut self) -> Result<()> {
+        diesel::delete(incoming_shares::table)
+            .execute(&mut self.connection)
+            .map(|_| ())
+            .map_err(message)
+    }
+
+    pub fn import_pending_shares(
+        &mut self,
+        network: &StoredNetwork,
+        blobs: &[StoredBlob],
+        ids: &[String],
+    ) -> Result<()> {
+        self.connection
+            .transaction::<_, diesel::result::Error, _>(|connection| {
+                diesel::update(networks::table.find(&network.id))
+                    .set(network)
+                    .execute(connection)?;
+                for blob in blobs {
+                    upsert_blob(connection, blob)?;
+                }
+                diesel::delete(incoming_shares::table.filter(incoming_shares::id.eq_any(ids)))
+                    .execute(connection)?;
+                Ok(())
+            })
+            .map_err(message)
+    }
+
     pub fn open(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory).map_err(message)?;
         let path = directory.join(DATABASE_NAME);
@@ -129,6 +236,8 @@ impl Store {
         network: &StoredNetwork,
         activate: bool,
         draft_clear: Option<DraftClear<'_>>,
+        blob: Option<&StoredBlob>,
+        live_hashes: &[String],
     ) -> Result<()> {
         self.connection
             .transaction::<_, diesel::result::Error, _>(|connection| {
@@ -163,6 +272,17 @@ impl Store {
                     )
                     .execute(connection)?;
                 }
+                if let Some(blob) = blob {
+                    upsert_blob(connection, blob)?;
+                }
+                // Tombstones retain CRDT history, but unreferenced content is
+                // removed in the same transaction as its last metadata reference.
+                diesel::delete(
+                    file_blobs::table
+                        .filter(file_blobs::network_id.eq(&network.id))
+                        .filter(file_blobs::sha256.ne_all(live_hashes)),
+                )
+                .execute(connection)?;
                 Ok(())
             })
             .map_err(message)
@@ -207,6 +327,54 @@ impl Store {
         .map(|_| ())
         .map_err(message)
     }
+
+    pub fn blob_catalog(&mut self, network_id: &str) -> Result<Vec<(String, i64)>> {
+        file_blobs::table
+            .filter(file_blobs::network_id.eq(network_id))
+            .select((file_blobs::sha256, file_blobs::size_bytes))
+            .load(&mut self.connection)
+            .map_err(message)
+    }
+
+    pub fn blob(&mut self, network_id: &str, hash: &str) -> Result<Option<StoredBlob>> {
+        file_blobs::table
+            .find((network_id, hash))
+            .select(StoredBlob::as_select())
+            .first(&mut self.connection)
+            .optional()
+            .map_err(message)
+    }
+
+    pub fn save_blob(&mut self, blob: &StoredBlob) -> Result<()> {
+        upsert_blob(&mut self.connection, blob)
+            .map(|_| ())
+            .map_err(message)
+    }
+
+    pub fn theme(&mut self) -> Result<String> {
+        settings::table
+            .find(1)
+            .select(settings::theme)
+            .first(&mut self.connection)
+            .map_err(message)
+    }
+
+    pub fn set_theme(&mut self, theme: &str) -> Result<()> {
+        diesel::update(settings::table.find(1))
+            .set(settings::theme.eq(theme))
+            .execute(&mut self.connection)
+            .map(|_| ())
+            .map_err(message)
+    }
+}
+
+fn upsert_blob(connection: &mut SqliteConnection, blob: &StoredBlob) -> diesel::QueryResult<usize> {
+    diesel::insert_into(file_blobs::table)
+        .values(blob)
+        .on_conflict((file_blobs::network_id, file_blobs::sha256))
+        .do_update()
+        .set(blob)
+        .execute(connection)
 }
 
 fn message(error: impl std::fmt::Display) -> String {

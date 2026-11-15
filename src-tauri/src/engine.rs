@@ -1,13 +1,22 @@
 //! Durable, local-first notes. The UI never owns the authoritative document.
-use crate::storage::{DraftClear, Store, StoredDraft, StoredNetwork, StoredState};
+pub(crate) use crate::files::MissingFile;
+use crate::files::{self, FileRecord};
+pub use crate::files::{FileContent, SharedFile, MAX_FILE_BYTES};
+pub use crate::incoming::PendingShare;
+use crate::incoming::{self, QueuedShare};
+use crate::invitations;
+use crate::storage::{DraftClear, Store, StoredBlob, StoredDraft, StoredNetwork, StoredState};
 use automerge::{
     transaction::Transactable, ActorId, AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value,
     ROOT,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -33,16 +42,41 @@ type Result<T> = std::result::Result<T, String>;
 pub struct Snapshot {
     pub network: Option<NetworkView>,
     pub notes: Vec<Note>,
+    pub files: Vec<SharedFile>,
     pub heads: Vec<String>,
     pub status: SyncStatus,
     pub device_id: String,
     pub listener_port: u16,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Settings {
+    pub theme: Theme,
 }
 #[derive(Clone, Serialize)]
 pub struct NetworkView {
     pub id: String,
     pub name: String,
     pub invite: String,
+    pub phrase: String,
 }
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +147,11 @@ pub struct Engine {
     state: Mutex<State>,
     port: AtomicU16,
     pub(crate) sync_requested: Notify,
+    pub(crate) files_requested: Notify,
+}
+pub(crate) struct SyncIdentity {
+    pub network_id: String,
+    pub secret: [u8; 32],
 }
 pub(crate) struct Packet {
     pub network_id: String,
@@ -157,6 +196,7 @@ impl Engine {
             }),
             port: AtomicU16::new(0),
             sync_requested: Notify::new(),
+            files_requested: Notify::new(),
         }))
     }
 
@@ -169,18 +209,34 @@ impl Engine {
         self.snapshot_locked(&mut *self.state()?)
     }
     fn snapshot_locked(&self, s: &mut State) -> Result<Snapshot> {
-        let (notes, heads) = if let Some(doc) = &mut s.doc {
+        let (notes, file_records, heads) = if let Some(doc) = &mut s.doc {
             (
                 read_notes(doc)?,
+                files::read_files(doc)?,
                 doc.get_heads().iter().map(ToString::to_string).collect(),
             )
         } else {
-            (vec![], vec![])
+            (vec![], vec![], vec![])
         };
+        let available: HashMap<String, u64> = match &s.network {
+            Some(network) => s
+                .store
+                .blob_catalog(&network.id)?
+                .into_iter()
+                .map(|(hash, size)| u64::try_from(size).map(|size| (hash, size)).map_err(err))
+                .collect::<Result<_>>()?,
+            None => HashMap::new(),
+        };
+        let files = file_records
+            .iter()
+            .filter(|file| !file.deleted)
+            .map(|file| file.view(available.get(&file.sha256) == Some(&file.size)))
+            .collect();
         let network = match &s.network {
             Some(network) => Some(NetworkView {
                 id: network.id.clone(),
                 name: network.name.clone(),
+                phrase: invitations::phrase(&network.id, &decode_secret(&network.secret)?)?,
                 invite: format!(
                     "{INVITE_PREFIX}{}",
                     URL_SAFE_NO_PAD.encode(serde_json::to_vec(network).map_err(err)?)
@@ -191,6 +247,7 @@ impl Engine {
         Ok(Snapshot {
             network,
             notes,
+            files,
             heads,
             status: SyncStatus {
                 peers: s
@@ -214,18 +271,19 @@ impl Engine {
         if name.is_empty() || name.chars().count() > 64 {
             return Err("Give your network a name of 1–64 characters.".into());
         }
+        let secret = rand::random::<[u8; 32]>();
         let network = Network {
             v: 1,
-            id: Uuid::new_v4().to_string(),
+            id: invitations::network_id(&secret),
             name: name.into(),
-            secret: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()),
+            secret: URL_SAFE_NO_PAD.encode(secret),
         };
         let doc = genesis(&network.id)?;
         self.activate(network, doc)
     }
 
     pub fn join_network(&self, invite: String) -> Result<Snapshot> {
-        let network = parse_invite(&invite)?;
+        let mut network = parse_invite(&invite)?;
         // Hold the same lock as edits/sync while restoring an archive, including
         // when rejoining the active network, so a merge cannot be overwritten.
         let mut state = self.state()?;
@@ -233,6 +291,9 @@ impl Engine {
             let (old, doc) = decode_saved_network(saved)?;
             if old.secret != network.secret {
                 return Err("This invitation has a different secret for a saved network.".into());
+            }
+            if !invite.trim().starts_with(INVITE_PREFIX) {
+                network.name = old.name;
             }
             doc
         } else {
@@ -257,7 +318,329 @@ impl Engine {
         s.last_sync = None;
         s.error = None;
         self.sync_requested.notify_one();
+        self.files_requested.notify_one();
         self.snapshot_locked(s)
+    }
+
+    pub fn get_settings(&self) -> Result<Settings> {
+        let theme = match self.state()?.store.theme()?.as_str() {
+            "system" => Theme::System,
+            "light" => Theme::Light,
+            "dark" => Theme::Dark,
+            _ => return Err("The saved theme is not supported.".into()),
+        };
+        Ok(Settings { theme })
+    }
+
+    pub(crate) fn stage_incoming(&self, shares: &[QueuedShare]) -> Result<()> {
+        incoming::validate(shares)?;
+        self.state()?.store.stage_shares(shares)
+    }
+
+    pub fn pending_shares(&self) -> Result<Vec<PendingShare>> {
+        self.state()?.store.pending_shares()
+    }
+
+    pub fn discard_pending_shares(&self) -> Result<()> {
+        self.state()?.store.discard_pending_shares()
+    }
+
+    pub fn import_pending_shares(&self, network_id: String) -> Result<Snapshot> {
+        let pending = {
+            let mut state = self.state()?;
+            ensure_active_network(&state, &network_id)?;
+            state.store.pending_contents()?
+        };
+        incoming::validate(&pending)?;
+        // Hash outside the state lock so typing/synchronization can continue.
+        let prepared: Vec<_> = pending
+            .into_iter()
+            .map(|share| {
+                let hash = files::content_hash(&share.content);
+                (share, hash)
+            })
+            .collect();
+        let mut state = self.state()?;
+        ensure_active_network(&state, &network_id)?;
+        let remaining: HashSet<_> = state
+            .store
+            .pending_shares()?
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        let network = state
+            .network
+            .clone()
+            .ok_or("Create or join a network first.")?;
+        let mut doc = state
+            .doc
+            .as_ref()
+            .ok_or("The local document is missing.")?
+            .clone();
+        let mut blobs = Vec::new();
+        let mut ids = Vec::new();
+        for (share, hash) in prepared {
+            if !remaining.contains(&share.id) {
+                continue;
+            }
+            let size = u64::try_from(share.content.len()).map_err(err)?;
+            files::add_file(
+                &mut doc,
+                &FileRecord {
+                    id: Uuid::new_v4().to_string(),
+                    name: share.name,
+                    mime_type: share.mime_type,
+                    size,
+                    sha256: hash.clone(),
+                    created_at: now(),
+                    deleted: false,
+                },
+            )?;
+            ids.push(share.id);
+            blobs.push(StoredBlob {
+                network_id: network.id.clone(),
+                sha256: hash,
+                size_bytes: i64::try_from(size).map_err(err)?,
+                content: share.content,
+            });
+        }
+        if ids.is_empty() {
+            return self.snapshot_locked(&mut state);
+        }
+        validate_document(&doc, &network_id)?;
+        let bytes = doc.save();
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err("This network has reached its history limit.".into());
+        }
+        state
+            .store
+            .import_pending_shares(&encode_saved_network(&network, bytes)?, &blobs, &ids)?;
+        state.doc = Some(doc);
+        self.sync_requested.notify_one();
+        self.files_requested.notify_one();
+        self.snapshot_locked(&mut state)
+    }
+
+    pub fn set_theme(&self, theme: Theme) -> Result<Settings> {
+        self.state()?.store.set_theme(theme.name())?;
+        Ok(Settings { theme })
+    }
+
+    pub fn import_file(
+        &self,
+        network_id: String,
+        name: String,
+        mime_type: String,
+        data_base64: String,
+    ) -> Result<Snapshot> {
+        if data_base64.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
+            return Err("Choose a file no larger than 25 MiB.".into());
+        }
+        let bytes = STANDARD
+            .decode(data_base64)
+            .map_err(|_| "The file data is not valid base64.")?;
+        self.import_file_bytes(network_id, name, mime_type, bytes)
+    }
+
+    pub fn import_file_bytes(
+        &self,
+        network_id: String,
+        name: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    ) -> Result<Snapshot> {
+        if bytes.len() > MAX_FILE_BYTES {
+            return Err("Choose a file no larger than 25 MiB.".into());
+        }
+        let mime_type = if mime_type.is_empty() {
+            "application/octet-stream".into()
+        } else {
+            mime_type
+        };
+        files::validate_name_mime(&name, &mime_type)?;
+        let hash = files::content_hash(&bytes);
+        let size = u64::try_from(bytes.len()).map_err(err)?;
+        let mut state = self.state()?;
+        ensure_active_network(&state, &network_id)?;
+        let network = state
+            .network
+            .clone()
+            .ok_or("Create or join a network first.")?;
+        let mut doc = state
+            .doc
+            .as_ref()
+            .ok_or("The local document is missing.")?
+            .clone();
+        let file = FileRecord {
+            id: Uuid::new_v4().to_string(),
+            name,
+            mime_type,
+            size,
+            sha256: hash.clone(),
+            created_at: now(),
+            deleted: false,
+        };
+        files::add_file(&mut doc, &file)?;
+        validate_document(&doc, &network.id)?;
+        let blob = StoredBlob {
+            network_id: network.id.clone(),
+            sha256: hash,
+            size_bytes: i64::try_from(size).map_err(err)?,
+            content: bytes,
+        };
+        save_network_with_blob(
+            &mut state.store,
+            &network,
+            &mut doc,
+            false,
+            None,
+            Some(&blob),
+        )?;
+        state.doc = Some(doc);
+        self.sync_requested.notify_one();
+        self.files_requested.notify_one();
+        self.snapshot_locked(&mut state)
+    }
+
+    pub fn read_file(&self, network_id: String, id: String) -> Result<FileContent> {
+        let (name, mime_type, bytes) = self.read_file_bytes(network_id, id)?;
+        Ok(FileContent {
+            name,
+            mime_type,
+            data_base64: STANDARD.encode(bytes),
+        })
+    }
+
+    pub fn read_file_bytes(
+        &self,
+        network_id: String,
+        id: String,
+    ) -> Result<(String, String, Vec<u8>)> {
+        validate_id(&id)?;
+        let (file, bytes) = {
+            let mut state = self.state()?;
+            ensure_active_network(&state, &network_id)?;
+            let file = live_file(
+                state.doc.as_ref().ok_or("The local document is missing.")?,
+                &id,
+            )?;
+            let bytes = state
+                .store
+                .blob(&network_id, &file.sha256)?
+                .ok_or("This file is waiting for a nearby device to send its content.")?
+                .content;
+            (file, bytes)
+        };
+        files::validate_content(&file.request(), &bytes)?;
+        Ok((file.name, file.mime_type, bytes))
+    }
+
+    pub fn delete_file(&self, network_id: String, id: String) -> Result<Snapshot> {
+        validate_id(&id)?;
+        let mut state = self.state()?;
+        ensure_active_network(&state, &network_id)?;
+        let network = state
+            .network
+            .clone()
+            .ok_or("Create or join a network first.")?;
+        let mut doc = state
+            .doc
+            .as_ref()
+            .ok_or("The local document is missing.")?
+            .clone();
+        files::delete_file(&mut doc, &id)?;
+        validate_document(&doc, &network.id)?;
+        save_network(&mut state.store, &network, &mut doc, false, None)?;
+        state.doc = Some(doc);
+        self.sync_requested.notify_one();
+        self.files_requested.notify_one();
+        self.snapshot_locked(&mut state)
+    }
+
+    pub(crate) fn sync_identity(&self) -> Result<Option<SyncIdentity>> {
+        self.state()?
+            .network
+            .as_ref()
+            .map(|network| {
+                Ok(SyncIdentity {
+                    network_id: network.id.clone(),
+                    secret: decode_secret(&network.secret)?,
+                })
+            })
+            .transpose()
+    }
+
+    pub(crate) fn missing_files(&self, network_id: &str) -> Result<Vec<MissingFile>> {
+        let mut state = self.state()?;
+        ensure_active_network(&state, network_id)?;
+        let files = files::read_files(state.doc.as_ref().ok_or("The local document is missing.")?)?;
+        let available: HashMap<String, u64> = state
+            .store
+            .blob_catalog(network_id)?
+            .into_iter()
+            .map(|(hash, size)| u64::try_from(size).map(|size| (hash, size)).map_err(err))
+            .collect::<Result<_>>()?;
+        let mut seen = HashSet::new();
+        Ok(files
+            .iter()
+            .filter(|file| {
+                !file.deleted
+                    && available.get(&file.sha256) != Some(&file.size)
+                    && seen.insert(file.sha256.clone())
+            })
+            .map(FileRecord::request)
+            .collect())
+    }
+
+    pub(crate) fn read_file_for_sync(
+        &self,
+        network_id: &str,
+        request: &MissingFile,
+    ) -> Result<Vec<u8>> {
+        let bytes = {
+            let mut state = self.state()?;
+            ensure_active_network(&state, network_id)?;
+            let file = live_file(
+                state.doc.as_ref().ok_or("The local document is missing.")?,
+                &request.id,
+            )?;
+            if file.request() != *request {
+                return Err("The requested file metadata changed.".into());
+            }
+            state
+                .store
+                .blob(network_id, &request.sha256)?
+                .ok_or("The file is not available on this device.")?
+                .content
+        };
+        files::validate_content(request, &bytes)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn accept_file(
+        &self,
+        network_id: &str,
+        request: &MissingFile,
+        bytes: &[u8],
+    ) -> Result<()> {
+        files::validate_content(request, bytes)?;
+        let mut state = self.state()?;
+        ensure_active_network(&state, network_id)?;
+        let file = live_file(
+            state.doc.as_ref().ok_or("The local document is missing.")?,
+            &request.id,
+        )?;
+        if file.request() != *request {
+            return Err("The file was changed or deleted while receiving it.".into());
+        }
+        state.store.save_blob(&StoredBlob {
+            network_id: network_id.into(),
+            sha256: request.sha256.clone(),
+            size_bytes: i64::try_from(request.size).map_err(err)?,
+            content: bytes.to_vec(),
+        })?;
+        self.files_requested.notify_one();
+        Ok(())
     }
 
     pub fn create_note(&self) -> Result<Snapshot> {
@@ -542,6 +925,7 @@ impl Engine {
             s.doc = Some(doc);
             // Relay newly received changes to other nearby peers promptly.
             self.sync_requested.notify_one();
+            self.files_requested.notify_one();
             bytes
         } else {
             doc.save()
@@ -583,6 +967,24 @@ fn genesis(id: &str) -> Result<AutoCommit> {
     doc.commit();
     doc.set_actor(ActorId::from(Uuid::new_v4().as_bytes().as_slice()));
     Ok(doc)
+}
+fn ensure_active_network(state: &State, network_id: &str) -> Result<()> {
+    if state
+        .network
+        .as_ref()
+        .is_none_or(|network| network.id != network_id)
+    {
+        return Err("The active network changed.".into());
+    }
+    Ok(())
+}
+
+fn live_file(doc: &AutoCommit, id: &str) -> Result<FileRecord> {
+    validate_id(id)?;
+    files::read_files(doc)?
+        .into_iter()
+        .find(|file| file.id == id && !file.deleted)
+        .ok_or("This shared file was deleted or no longer exists.".into())
 }
 fn note_object(doc: &AutoCommit, id: &str) -> Result<ObjId> {
     match doc.get(ROOT, id).map_err(err)? {
@@ -649,6 +1051,7 @@ fn validate_document(doc: &AutoCommit, network_id: &str) -> Result<()> {
     if doc.keys(ROOT).count() > MAX_NOTES + 2 {
         return Err("Too many notes in this network.".into());
     }
+    files::read_files(doc)?;
     for id in doc.keys(ROOT).filter(|id| !id.starts_with('_')) {
         validate_id(&id)?;
         let object = note_object(doc, &id)?;
@@ -672,6 +1075,15 @@ fn parse_invite(invite: &str) -> Result<Network> {
     let invite = invite.trim();
     if invite.len() > 4096 {
         return Err("This invitation is too large.".into());
+    }
+    if !invite.starts_with(INVITE_PREFIX) {
+        let (id, secret) = invitations::parse(invite)?;
+        return Ok(Network {
+            v: 1,
+            id,
+            name: "Shared network".into(),
+            secret: URL_SAFE_NO_PAD.encode(secret),
+        });
     }
     let encoded = invite
         .strip_prefix(INVITE_PREFIX)
@@ -866,6 +1278,22 @@ fn save_network(
     activate: bool,
     draft_clear: Option<DraftClear<'_>>,
 ) -> Result<Vec<u8>> {
+    save_network_with_blob(store, network, doc, activate, draft_clear, None)
+}
+
+fn save_network_with_blob(
+    store: &mut Store,
+    network: &Network,
+    doc: &mut AutoCommit,
+    activate: bool,
+    draft_clear: Option<DraftClear<'_>>,
+    blob: Option<&StoredBlob>,
+) -> Result<Vec<u8>> {
+    let live_hashes: Vec<String> = files::read_files(doc)?
+        .into_iter()
+        .filter(|file| !file.deleted)
+        .map(|file| file.sha256)
+        .collect();
     let bytes = doc.save();
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err("This network has reached the 8 MB MVP limit.".into());
@@ -874,6 +1302,8 @@ fn save_network(
         &encode_saved_network(network, bytes.clone())?,
         activate,
         draft_clear,
+        blob,
+        &live_hashes,
     )?;
     Ok(bytes)
 }
@@ -905,6 +1335,9 @@ fn err(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn active_network_id(engine: &Engine) -> String {
+        engine.snapshot().unwrap().network.unwrap().id
+    }
     fn pair() -> (
         tempfile::TempDir,
         tempfile::TempDir,
@@ -925,6 +1358,53 @@ mod tests {
             .accept_document(&packet.network_id, &packet.document)
             .unwrap();
         a.accept_document(&packet.network_id, &response).unwrap();
+    }
+    #[test]
+    fn word_invitation_joins_offline_and_preserves_saved_network_names() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = Engine::open(a_dir.path().into()).unwrap();
+        let b = Engine::open(b_dir.path().into()).unwrap();
+        let network = a.create_network("Kitchen".into()).unwrap().network.unwrap();
+        assert_eq!(network.phrase.split_whitespace().count(), 24);
+        let joined = b.join_network(network.phrase.clone()).unwrap();
+        assert_eq!(joined.network.unwrap().id, network.id);
+        // Joining requires no discovery, server, or online phrase lookup.
+        b.create_note().unwrap();
+        a.create_note().unwrap();
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().notes.len(), 2);
+        a.create_network("Other".into()).unwrap();
+        let restored = a.join_network(network.phrase).unwrap();
+        assert_eq!(restored.network.unwrap().name, "Kitchen");
+        assert_eq!(restored.notes.len(), 2);
+        assert_eq!(parse_invite(&network.invite).unwrap().id, network.id);
+    }
+
+    #[test]
+    fn legacy_network_word_invitation_keeps_existing_notes_and_key() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = Engine::open(a_dir.path().into()).unwrap();
+        let b = Engine::open(b_dir.path().into()).unwrap();
+        let network = Network {
+            v: 1,
+            id: Uuid::new_v4().to_string(),
+            name: "Existing network".into(),
+            secret: URL_SAFE_NO_PAD.encode([81u8; 32]),
+        };
+        a.activate(network.clone(), genesis(&network.id).unwrap())
+            .unwrap();
+        a.create_note().unwrap();
+        let phrase = a.snapshot().unwrap().network.unwrap().phrase;
+        assert_eq!(phrase.split_whitespace().count(), 36);
+        b.join_network(phrase).unwrap();
+        assert_eq!(
+            a.packet().unwrap().unwrap().secret,
+            b.packet().unwrap().unwrap().secret
+        );
+        exchange(&a, &b);
+        assert_eq!(b.snapshot().unwrap().notes.len(), 1);
     }
     #[test]
     fn independent_creation_and_offline_text_edits_converge() {
@@ -1326,6 +1806,428 @@ mod tests {
         let reopened = Engine::open(db.path().into()).unwrap();
         assert!(reopened.get_draft().unwrap().is_none());
         assert!(reopened.snapshot().unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn shared_files_persist_deduplicate_and_delete_independently_of_notes() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::open(directory.path().into()).unwrap();
+        let network = engine
+            .create_network("Files".into())
+            .unwrap()
+            .network
+            .unwrap();
+        engine.create_note().unwrap();
+        let first = engine
+            .import_file_bytes(
+                active_network_id(&engine),
+                "picture.png".into(),
+                "image/png".into(),
+                b"same content".to_vec(),
+            )
+            .unwrap();
+        let first_id = first.files[0].id.clone();
+        let second = engine
+            .import_file_bytes(
+                active_network_id(&engine),
+                "copy.bin".into(),
+                String::new(),
+                b"same content".to_vec(),
+            )
+            .unwrap();
+        let second_id = second
+            .files
+            .iter()
+            .find(|file| file.id != first_id)
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(second.files.len(), 2);
+        assert!(second.files.iter().all(|file| file.available));
+        assert_eq!(second.notes.len(), 1);
+        assert_eq!(
+            engine
+                .state()
+                .unwrap()
+                .store
+                .blob_catalog(&network.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(engine);
+        let engine = Engine::open(directory.path().into()).unwrap();
+        assert_eq!(engine.snapshot().unwrap().files.len(), 2);
+        assert_eq!(
+            engine
+                .read_file_bytes(active_network_id(&engine), second_id.clone())
+                .unwrap(),
+            (
+                "copy.bin".into(),
+                "application/octet-stream".into(),
+                b"same content".to_vec()
+            )
+        );
+        engine
+            .delete_file(active_network_id(&engine), first_id)
+            .unwrap();
+        assert_eq!(
+            engine
+                .state()
+                .unwrap()
+                .store
+                .blob_catalog(&network.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        engine
+            .delete_file(active_network_id(&engine), second_id)
+            .unwrap();
+        assert!(engine.snapshot().unwrap().files.is_empty());
+        assert_eq!(engine.snapshot().unwrap().notes.len(), 1);
+        assert!(engine
+            .state()
+            .unwrap()
+            .store
+            .blob_catalog(&network.id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn concurrent_file_metadata_converges_and_tombstones_reject_stale_content() {
+        let (_da, _db, a, b) = pair();
+        let first = a
+            .import_file_bytes(
+                active_network_id(&a),
+                "a.txt".into(),
+                "text/plain".into(),
+                b"first".to_vec(),
+            )
+            .unwrap();
+        let second = b
+            .import_file_bytes(
+                active_network_id(&b),
+                "b.txt".into(),
+                "text/plain".into(),
+                b"second".to_vec(),
+            )
+            .unwrap();
+        let id = second.files[0].id.clone();
+        let old_document = b.packet().unwrap().unwrap();
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().files.len(), 2);
+        assert_eq!(b.snapshot().unwrap().files.len(), 2);
+        let network_id = first.network.unwrap().id;
+        let request = a.missing_files(&network_id).unwrap().remove(0);
+        assert_eq!(request.id, id);
+        b.delete_file(active_network_id(&b), id).unwrap();
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().files.len(), 1);
+        assert!(a.accept_file(&network_id, &request, b"second").is_err());
+        a.accept_document(&network_id, &old_document.document)
+            .unwrap();
+        assert_eq!(a.snapshot().unwrap().files.len(), 1);
+        assert!(a.missing_files(&network_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn received_files_require_exact_hash_size_and_network_and_become_available() {
+        let (_da, _db, a, b) = pair();
+        let snapshot = a
+            .import_file_bytes(
+                active_network_id(&a),
+                "report.pdf".into(),
+                "application/pdf".into(),
+                b"sample data".to_vec(),
+            )
+            .unwrap();
+        let network_id = snapshot.network.unwrap().id;
+        let id = snapshot.files[0].id.clone();
+        exchange(&a, &b);
+        assert!(!b.snapshot().unwrap().files[0].available);
+        assert!(b
+            .read_file_bytes(active_network_id(&b), id.clone())
+            .is_err());
+        let request = b.missing_files(&network_id).unwrap().remove(0);
+        assert!(b
+            .accept_file(&network_id, &request, b"wrong bytes")
+            .is_err());
+        let invalid = MissingFile {
+            size: request.size + 1,
+            ..request.clone()
+        };
+        assert!(b
+            .accept_file(&network_id, &invalid, b"sample data")
+            .is_err());
+        assert!(b
+            .accept_file(&Uuid::new_v4().to_string(), &request, b"sample data")
+            .is_err());
+        b.accept_file(&network_id, &request, b"sample data")
+            .unwrap();
+        assert!(b.snapshot().unwrap().files[0].available);
+        assert!(b.missing_files(&network_id).unwrap().is_empty());
+        assert_eq!(
+            b.read_file(active_network_id(&b), id.clone())
+                .unwrap()
+                .data_base64,
+            STANDARD.encode(b"sample data")
+        );
+        b.create_network("Other".into()).unwrap();
+        assert!(b.read_file_bytes(active_network_id(&b), id).is_err());
+        assert!(b.read_file_for_sync(&network_id, &request).is_err());
+        assert!(b
+            .accept_file(&network_id, &request, b"sample data")
+            .is_err());
+    }
+
+    #[test]
+    fn file_limits_reject_invalid_content_and_oversized_peer_catalogs() {
+        let (_da, _db, a, b) = pair();
+        assert!(a
+            .import_file_bytes(
+                active_network_id(&a),
+                "too-big.bin".into(),
+                String::new(),
+                vec![0; MAX_FILE_BYTES + 1]
+            )
+            .is_err());
+        assert!(a
+            .import_file_bytes(
+                active_network_id(&a),
+                "../escape.txt".into(),
+                "text/plain".into(),
+                vec![]
+            )
+            .is_err());
+        assert!(a
+            .import_file(
+                active_network_id(&a),
+                "bad.bin".into(),
+                String::new(),
+                "not base64".into()
+            )
+            .is_err());
+        let packet = a.packet().unwrap().unwrap();
+        let mut doc = AutoCommit::load(&packet.document).unwrap();
+        for index in 0..11 {
+            files::add_file(
+                &mut doc,
+                &FileRecord {
+                    id: Uuid::new_v4().to_string(),
+                    name: "file.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    size: u64::try_from(MAX_FILE_BYTES).unwrap(),
+                    sha256: format!("{index:064x}"),
+                    created_at: now(),
+                    deleted: false,
+                },
+            )
+            .unwrap();
+        }
+        assert!(b.accept_document(&packet.network_id, &doc.save()).is_err());
+        assert!(b.snapshot().unwrap().files.is_empty());
+        let mut doc = AutoCommit::load(&packet.document).unwrap();
+        for _ in 0..501 {
+            files::add_file(
+                &mut doc,
+                &FileRecord {
+                    id: Uuid::new_v4().to_string(),
+                    name: "empty.txt".into(),
+                    mime_type: "text/plain".into(),
+                    size: 0,
+                    sha256: files::content_hash(&[]),
+                    created_at: now(),
+                    deleted: false,
+                },
+            )
+            .unwrap();
+        }
+        assert!(b.accept_document(&packet.network_id, &doc.save()).is_err());
+        assert!(b.snapshot().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn theme_is_local_persistent_and_does_not_change_shared_genesis() {
+        let (directory, _db, a, b) = pair();
+        let before = a.snapshot().unwrap().heads;
+        let packet = a.packet().unwrap().unwrap();
+        let doc = AutoCommit::load(&packet.document).unwrap();
+        assert_eq!(
+            doc.keys(ROOT).collect::<Vec<_>>(),
+            vec!["_network".to_string(), "_schema".to_string()]
+        );
+        assert_eq!(a.get_settings().unwrap().theme, Theme::System);
+        a.set_theme(Theme::Dark).unwrap();
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().heads, before);
+        assert_eq!(b.get_settings().unwrap().theme, Theme::System);
+        drop(a);
+        let reopened = Engine::open(directory.path().into()).unwrap();
+        assert_eq!(reopened.get_settings().unwrap().theme, Theme::Dark);
+        reopened.set_theme(Theme::Light).unwrap();
+        assert_eq!(reopened.get_settings().unwrap().theme, Theme::Light);
+        reopened.set_theme(Theme::System).unwrap();
+        assert_eq!(reopened.get_settings().unwrap().theme, Theme::System);
+    }
+
+    #[test]
+    fn file_settings_schema_upgrade_preserves_existing_sqlite_notes_and_history() {
+        use diesel::Connection;
+        use diesel_migrations::MigrationHarness;
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::open(directory.path().into()).unwrap();
+        engine
+            .create_network("Existing 0.2 notebook".into())
+            .unwrap();
+        let created = engine.create_note().unwrap();
+        let before = engine
+            .update_note(
+                created.notes[0].id.clone(),
+                "Keep me".into(),
+                "Existing text".into(),
+                created.heads,
+            )
+            .unwrap();
+        drop(engine);
+        // Revert only the new migration to reproduce the shipped 0.2 schema.
+        let database = directory.path().join(crate::storage::DATABASE_NAME);
+        let mut connection =
+            diesel::sqlite::SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        const MIGRATIONS: diesel_migrations::EmbeddedMigrations =
+            diesel_migrations::embed_migrations!("migrations");
+        connection.revert_last_migration(MIGRATIONS).unwrap();
+        drop(connection);
+        let upgraded = Engine::open(directory.path().into()).unwrap();
+        let after = upgraded.snapshot().unwrap();
+        assert_eq!(after.device_id, before.device_id);
+        assert_eq!(after.heads, before.heads);
+        assert_eq!(after.notes[0].body, "Existing text");
+        assert_eq!(
+            after.network.unwrap().invite,
+            before.network.unwrap().invite
+        );
+        assert_eq!(upgraded.get_settings().unwrap().theme, Theme::System);
+        assert!(
+            upgraded
+                .import_file_bytes(
+                    active_network_id(&upgraded),
+                    "new.txt".into(),
+                    "text/plain".into(),
+                    b"works".to_vec()
+                )
+                .unwrap()
+                .files[0]
+                .available
+        );
+    }
+
+    #[test]
+    fn file_commands_reject_a_stale_network_instead_of_sharing_into_a_new_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::open(directory.path().into()).unwrap();
+        let first = engine
+            .create_network("Private A".into())
+            .unwrap()
+            .network
+            .unwrap();
+        let imported = engine
+            .import_file_bytes(
+                first.id.clone(),
+                "private.txt".into(),
+                "text/plain".into(),
+                b"only A".to_vec(),
+            )
+            .unwrap();
+        let id = imported.files[0].id.clone();
+        engine.create_network("Different B".into()).unwrap();
+        assert!(engine
+            .import_file_bytes(
+                first.id.clone(),
+                "selected-in-A.txt".into(),
+                "text/plain".into(),
+                b"must not leak".to_vec()
+            )
+            .is_err());
+        assert!(engine
+            .read_file_bytes(first.id.clone(), id.clone())
+            .is_err());
+        assert!(engine.delete_file(first.id.clone(), id.clone()).is_err());
+        assert!(engine.snapshot().unwrap().files.is_empty());
+        engine.join_network(first.invite).unwrap();
+        assert_eq!(engine.snapshot().unwrap().files.len(), 1);
+        assert_eq!(engine.read_file_bytes(first.id, id).unwrap().2, b"only A");
+    }
+
+    #[test]
+    fn noncanonical_file_ids_and_directory_names_are_rejected() {
+        let (_da, _db, a, b) = pair();
+        let network_id = active_network_id(&a);
+        for name in [".", ".."] {
+            assert!(a
+                .import_file_bytes(network_id.clone(), name.into(), "text/plain".into(), vec![])
+                .is_err());
+        }
+        let packet = a.packet().unwrap().unwrap();
+        let mut doc = AutoCommit::load(&packet.document).unwrap();
+        files::add_file(
+            &mut doc,
+            &FileRecord {
+                id: "F4F16310-31D0-48B9-AB66-EAD758F68F73".into(),
+                name: "invalid.txt".into(),
+                mime_type: "text/plain".into(),
+                size: 0,
+                sha256: files::content_hash(&[]),
+                created_at: now(),
+                deleted: false,
+            },
+        )
+        .unwrap();
+        assert!(b.accept_document(&network_id, &doc.save()).is_err());
+        assert!(b.snapshot().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn failed_blob_insert_rolls_back_its_file_metadata_in_sqlite() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::open(directory.path().into()).unwrap();
+        engine.create_network("Atomic files".into()).unwrap();
+        let mut state = engine.state().unwrap();
+        let network = state.network.clone().unwrap();
+        let mut doc = state.doc.clone().unwrap();
+        let hash = files::content_hash(b"data");
+        files::add_file(
+            &mut doc,
+            &FileRecord {
+                id: Uuid::new_v4().to_string(),
+                name: "atomic.txt".into(),
+                mime_type: "text/plain".into(),
+                size: 4,
+                sha256: hash.clone(),
+                created_at: now(),
+                deleted: false,
+            },
+        )
+        .unwrap();
+        let record = encode_saved_network(&network, doc.save()).unwrap();
+        let invalid_blob = StoredBlob {
+            network_id: network.id.clone(),
+            sha256: hash.clone(),
+            size_bytes: 5,
+            content: b"data".to_vec(),
+        };
+        assert!(state
+            .store
+            .save_network(&record, false, None, Some(&invalid_blob), &[hash])
+            .is_err());
+        let saved = state.store.network(&network.id).unwrap().unwrap();
+        assert!(
+            files::read_files(&AutoCommit::load(&saved.document).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(state.store.blob_catalog(&network.id).unwrap().is_empty());
     }
 
     #[test]

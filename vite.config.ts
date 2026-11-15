@@ -3,6 +3,7 @@ import { defineConfig } from 'vite';
 const host = process.env['TAURI_DEV_HOST'];
 export default defineConfig({
   clearScreen: false,
+  build: { target: ['safari15', 'chrome87'] },
   server: {
     port: 1420,
     strictPort: true,

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Local application IPC and LAN discovery only.",
+  "description": "Local application IPC, LAN discovery, and saving files to a user-selected destination.",
   "windows": ["main"],
-  "permissions": ["core:default", "lan:default"]
+  "permissions": ["core:default", "lan:default", "dialog:allow-save", "fs:allow-write-file"]
 }

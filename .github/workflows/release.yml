@@ -70,7 +70,7 @@ jobs:
       - name: Phone and tablet UI tests
         run: npm run test:ui
 
-  # Build in parallel with tests; publishing waits for both jobs to pass.
+  # Build in parallel with tests; publishing waits for every platform.
   android:
     name: Android (signed APK)
     if: github.event_name != 'pull_request'
@@ -138,14 +138,55 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: android
+          name: release-android
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+
+  macos:
+    name: macOS (Apple Silicon)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - run: npm ci
+
+      - name: Install the Apple extension project generator
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Test the Apple share inbox and file providers
+        run: swift test --package-path src-tauri/apple-share -j 2
+
+      - name: Build and verify the ad-hoc signed Mac app and installer
+        run: npm run macos:release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos
           path: out/*
           if-no-files-found: error
           compression-level: 0
 
   publish:
     name: Publish latest
-    needs: [check, android]
+    needs: [check, android, macos]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
@@ -155,8 +196,17 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: android
+          pattern: release-*
+          merge-multiple: true
           path: release
+
+      - name: Check downloads and combine checksums
+        working-directory: release
+        run: |
+          sha256sum --check SHA256SUMS
+          sha256sum --check SHA256SUMS-macos
+          sha256sum *.apk *.dmg *.zip > SHA256SUMS
+          rm SHA256SUMS-macos
 
       - name: Move the latest tag to this commit
         run: |
@@ -180,11 +230,17 @@ jobs:
           while keeping your notes. A development APK signed with Android's
           debug key cannot be upgraded directly to this release APK.
 
+          On an **Apple Silicon Mac (M1 or newer, macOS 12+)**, download
+          **Murmur-macos-apple-silicon.dmg**, open it, and drag Murmur to Applications.
+          A zipped app is also available. The Mac app is ad-hoc signed and is not
+          Apple-notarized; a browser download may require **System Settings →
+          Privacy & Security → Open Anyway** after the first launch attempt.
+
           Camera access is used to scan invitations. Allow local network access
           when requested, and open Murmur on the same Wi-Fi as your other device
-          to synchronize. Notes and the bundled QR scanner work offline.
+          to synchronize notes and files. Notes and the bundled QR scanner work offline.
 
-          `SHA256SUMS` contains the APK's download checksum.
+          `SHA256SUMS` contains checksums for all downloads.
 
           HEADER
           {

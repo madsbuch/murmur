@@ -1,8 +1,11 @@
 import QRCode from 'qrcode';
 import { api, native } from './bridge';
+import { desktopCameraAvailable, scanDesktopInvitation } from './desktop-scanner';
 import { mapCaret, rebaseDraft } from './rebase';
-import type { DraftBackup, Note, Snapshot } from './types';
-import { errorText, parseDraft, record, text } from './validation';
+import type { DraftBackup, Note, PendingShare, Settings, SharedFile, Snapshot } from './types';
+import { applyTheme } from './theme';
+import { downloadPreviewFile, fileBlob, fileSize, imageThumbnail, readSelectedFile } from './files';
+import { errorText, parseDraft, parseTheme, record, text } from './validation';
 import { getDiscoveryError, initializeDiscovery } from '../native';
 import './style.css';
 
@@ -16,13 +19,41 @@ const modalRoot = requiredDiv('#modal-root');
 const toast = requiredDiv('#toast');
 // Webview keyboards resize the visual viewport on iOS as well as Android.
 function fitViewport() {
-  document.documentElement.style.setProperty('--app-height', (window.visualViewport?.height ?? window.innerHeight).toString() + 'px');
+  const viewport = window.visualViewport;
+  const height = Math.min(viewport?.height ?? window.innerHeight, window.innerHeight);
+  document.documentElement.style.setProperty('--app-height', height.toString() + 'px');
+  document.documentElement.style.setProperty('--viewport-top', (viewport?.offsetTop ?? 0).toString() + 'px');
+  document.documentElement.classList.toggle('compact-height', height < 500);
+  document.documentElement.classList.toggle('short-height', height < 300);
 }
 fitViewport();
 window.visualViewport?.addEventListener('resize', fitViewport);
+window.visualViewport?.addEventListener('scroll', fitViewport);
 window.addEventListener('resize', fitViewport);
-let snapshot: Snapshot = { network: null, notes: [], heads: [], status: { peers: 0, lastSync: null, error: null }, deviceId: '', listenerPort: 0 };
+let snapshot: Snapshot = { network: null, notes: [], files: [], heads: [], status: { peers: 0, lastSync: null, error: null }, deviceId: '', listenerPort: 0 };
 let started = false;
+let recoveryPending = true;
+let canScan = false;
+let desktopScanController: AbortController | null = null;
+let pendingShares: PendingShare[] = [];
+let checkingShares = false;
+let importingShares = false;
+let shareFailureKey: string | null = null;
+let shareReadError = '';
+let shareListenerReady = false;
+let incomingCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let section: 'notes' | 'files' | 'settings' = 'notes';
+let settings: Settings = { theme: 'system' };
+let fileBusy = false;
+let fileToDelete: { id: string; networkId: string } | null = null;
+const imageUrls = new Map<string, string>();
+const loadingImages = new Set<string>();
+const failedImages = new Set<string>();
+let thumbnailQueue: Promise<void> = Promise.resolve();
+let imageObserver: IntersectionObserver | null = null;
+let imageGeneration = 0;
+let filesSignature = '';
+let modalImageUrl: string | null = null;
 let draftWrites: Promise<void> = Promise.resolve();
 let selected: string | null = null;
 let mobileEditor = false;
@@ -37,6 +68,10 @@ let scanCancelled = false;
 let draft: { id: string; title: string; body: string; baseHeads: string[]; version: number; dirty: boolean } | null = null;
 
 const paths: Record<string, string> = {
+  files: '<path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3"/>',
+  settings: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
+  download: '<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="2"/><path d="m21 16-6-6L3 21"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   arrow: '<path d="m9 5 7 7-7 7"/>',
   back: '<path d="m15 5-7 7 7 7"/>',
@@ -54,7 +89,7 @@ const icon = (name: string, className = '') => `<svg class="icon ${className}" v
 const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (value: string) => value.replace(/[&<>"']/g, c => entities[c] ?? c);
 const noteTitle = (note: Pick<Note, 'title'>) => note.title.trim().length === 0 ? 'Untitled note' : note.title.trim();
-const notePreview = (body: string) => body.trim().length === 0 ? 'A blank page, ready for you.' : body.trim().replace(/\s+/g, ' ').slice(0, 115);
+const notePreview = (body: string) => body.trim().length === 0 ? 'Empty note' : body.trim().replace(/\s+/g, ' ').slice(0, 115);
 const displayDate = (time: number) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(time < 1e12 ? time * 1000 : time);
 
 function notify(message: string) {
@@ -69,18 +104,231 @@ function brand() {
 }
 
 function previewBanner() {
-  return native ? '' : '<div class="preview-banner">Browser preview <span>·</span> Temporary demo; reload clears these notes. The mobile app saves locally and supports nearby sync and scanning.</div>';
+  return native ? '' : '<div class="preview-banner">Browser preview <span>·</span> Temporary demo; reload clears these notes, files, and settings.</div>';
+}
+
+function navigation() {
+  return `<nav class="app-nav" aria-label="Main navigation"><button class="nav-button ${section === 'notes' ? 'active' : ''}" data-action="nav-notes" ${section === 'notes' ? 'aria-current="page"' : ''}>${icon('note')}<span>Notes</span></button><button class="nav-button ${section === 'files' ? 'active' : ''}" data-action="nav-files" ${section === 'files' ? 'aria-current="page"' : ''}>${icon('files')}<span>Files</span></button><button class="nav-button ${section === 'settings' ? 'active' : ''}" data-action="nav-settings" ${section === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span></button></nav>`;
+}
+
+function renderSettings() {
+  return `<section class="settings-screen screen-scroll" aria-label="Settings"><header class="screen-heading"><div><h1>Settings</h1></div></header><section class="settings-card"><h2>Appearance</h2><div class="theme-choices" role="group" aria-label="Theme">${['system', 'light', 'dark'].map(theme => `<button class="theme-choice ${settings.theme === theme ? 'selected' : ''}" data-theme="${theme}" aria-pressed="${settings.theme === theme ? 'true' : 'false'}"><span class="theme-swatch swatch-${theme}" aria-hidden="true"></span>${theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark'}${settings.theme === theme ? icon('check') : ''}</button>`).join('')}</div></section>${snapshot.network === null ? '' : `<section class="settings-card"><h2>Network</h2><p class="network-name">${esc(snapshot.network.name)}</p><div id="sync-status"></div><button class="button secondary" data-action="network-menu">Manage network ${icon('arrow')}</button></section>`}</section>`;
 }
 
 function render() {
-  if (snapshot.network === null) {
-    app.innerHTML = `${previewBanner()}<div class="welcome-shell"><header class="topbar">${brand()}<span class="eyebrow welcome-topline">A nearby kind of notebook</span></header><main class="welcome"><div class="welcome-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="art-note art-note-one"><i></i><i></i><i></i></div><div class="art-note art-note-two"><i></i><i></i><i></i></div><span class="art-dot"></span></div><p class="eyebrow">Small circles. Shared thoughts.</p><h1>Notes,<br/><em>kept close.</em></h1><p class="welcome-copy">A quiet place for your notes, shared directly with the people and devices nearby.</p><div class="welcome-actions"><button class="button primary" data-action="create-network">Create a network ${icon('plus')}</button><button class="button secondary" data-action="join-network">Join a network ${icon('scan')}</button></div><div class="welcome-foot">${icon('lock')} On your devices. Available offline. Always yours.</div></main><footer class="welcome-footer"><span>No accounts. No cloud.</span><span>Just a little connection.</span></footer></div>`;
+  imageObserver?.disconnect();
+  if (snapshot.network === null && section !== 'settings') {
+    app.innerHTML = `${previewBanner()}<div class="welcome-shell"><header class="topbar">${brand()}<button class="icon-button" data-action="nav-settings" aria-label="Settings">${icon('settings')}</button></header><main class="welcome"><div id="pending-share-status" class="pending-share-status" hidden></div><div class="welcome-actions"><button class="button primary" data-action="create-network">Create a network ${icon('plus')}</button><button class="button secondary" data-action="join-network">Join a network ${icon('scan')}</button></div></main></div>`;
+    renderPendingShares();
     return;
   }
-  app.innerHTML = `${previewBanner()}<div class="notebook-shell ${mobileEditor ? 'editor-open' : ''}"><header class="topbar">${brand()}<button class="network-pill" data-action="share"><span class="status-dot"></span><span>${esc(snapshot.network.name)}</span>${icon('arrow')}</button></header><main class="workspace"><aside class="sidebar"><div class="sidebar-heading"><div><p class="eyebrow">Your shared notebook</p><h1>Notes <span id="note-count">${snapshot.notes.length.toString()}</span></h1></div><button class="icon-button new-note-small" data-action="new-note" aria-label="New note">${icon('plus')}</button></div><button class="button primary new-note" data-action="new-note">${icon('plus')} New note</button><div id="note-list" class="note-list"></div><div class="sidebar-bottom"><div id="sync-status"></div><button class="text-button network-manage" data-action="network-menu">Manage network ${icon('arrow')}</button></div></aside><section class="editor-panel" aria-label="Note editor"><div id="editor"></div></section></main><footer class="notebook-footer"><span>${icon('lock')} Saved here. Shared nearby.</span><button class="text-button" data-action="share">${icon('share')} Invite a device</button></footer></div>`;
+  const notesScreen = `<main class="workspace"><aside class="sidebar"><div class="sidebar-heading"><h1>Notes <span id="note-count">${snapshot.notes.length.toString()}</span></h1><button class="icon-button new-note-small" data-action="new-note" aria-label="New note">${icon('plus')}</button></div><div id="note-list" class="note-list"></div><div class="sidebar-bottom"><div id="sync-status"></div><button class="text-button network-manage" data-action="network-menu">Manage network ${icon('arrow')}</button></div></aside><section class="editor-panel" aria-label="Note editor"><div id="editor"></div></section></main>`;
+  const filesScreen = `<section class="files-screen" aria-label="Shared files"><header class="screen-heading"><div><h1>Shared files <span id="file-count">${snapshot.files.length.toString()}</span></h1></div><button class="button primary" data-action="add-files" ${fileBusy ? 'disabled' : ''}>${icon('plus')}<span>${fileBusy ? 'Adding…' : 'Add files'}</span></button><input id="file-picker" class="sr-only" type="file" multiple aria-label="Choose files"/></header><p class="files-hint">Pictures, PDFs, or any file · Up to 25 MB each</p><div id="file-grid" class="file-grid screen-scroll"></div><div class="files-footer"><div id="sync-status"></div></div></section>`;
+  app.innerHTML = `${previewBanner()}<div data-section="${section}" class="notebook-shell ${section === 'notes' && mobileEditor ? 'editor-open' : ''}"><header class="topbar">${brand()}${snapshot.network === null ? '<button class="text-button" data-action="nav-notes">Back</button>' : `<button class="network-pill" data-action="share"><span class="status-dot"></span><span>${esc(snapshot.network.name)}</span>${icon('share')}</button>`}</header><div id="pending-share-status" class="pending-share-status" hidden></div>${section === 'notes' ? notesScreen : section === 'files' ? filesScreen : renderSettings()}${snapshot.network === null ? '' : navigation()}</div>`;
+  filesSignature = '';
+  renderPendingShares();
   renderList();
   renderEditor();
+  renderFiles();
   renderStatus();
+}
+
+function renderPendingShares() {
+  const status = document.querySelector('#pending-share-status');
+  if (!(status instanceof HTMLElement)) return;
+  status.hidden = pendingShares.length === 0;
+  if (pendingShares.length === 0) { status.replaceChildren(); return; }
+  const count = pendingShares.length.toString();
+  const label = count + (pendingShares.length === 1 ? ' file ready to add' : ' files ready to add');
+  status.innerHTML = `<span role="status">${importingShares ? 'Adding shared files…' : label}</span><div class="pending-share-actions">${snapshot.network === null ? '' : `<button class="text-button" data-action="import-shares" ${importingShares ? 'disabled' : ''}>${shareFailureKey === null ? 'Add now' : 'Retry import'}</button>`}<button class="text-button" data-action="discard-shares" ${importingShares ? 'disabled' : ''}>Discard</button></div>`;
+}
+
+function requestIncomingCheck(retry = false) {
+  if (!native) return;
+  if (retry) shareFailureKey = null;
+  clearTimeout(incomingCheckTimer);
+  incomingCheckTimer = setTimeout(() => void checkIncomingShares(), 0);
+}
+
+async function importIncomingShares(networkId: string, key: string) {
+  if (!await flushSave()) { shareFailureKey = key; renderPendingShares(); return; }
+  if (snapshot.network?.id !== networkId || recoveryPending || scanning || modalRoot.firstElementChild !== null) return;
+  importingShares = true;
+  renderPendingShares();
+  const previous = new Set(snapshot.files.map(file => file.id));
+  try {
+    const result = await api.importShares(networkId);
+    if (snapshot.network?.id !== networkId || result.network?.id !== networkId) return;
+    snapshot = result;
+    pendingShares = [];
+    shareFailureKey = null;
+    const count = snapshot.files.filter(file => !previous.has(file.id)).length;
+    // Typing can continue while the native batch commits. Save those final
+    // keystrokes too before replacing the editor with the Files screen.
+    if (!await flushSave()) { renderPendingShares(); renderList(); return; }
+    if (snapshot.network?.id !== networkId) return;
+    section = 'files';
+    mobileEditor = false;
+    render();
+    if (count > 0) notify(count.toString() + (count === 1 ? ' file added.' : ' files added.'));
+  } catch (error) {
+    shareFailureKey = key;
+    notify('Could not add shared files: ' + errorText(error));
+  } finally {
+    importingShares = false;
+    renderPendingShares();
+  }
+}
+
+async function checkIncomingShares() {
+  if (!native || !started || document.hidden || checkingShares) return;
+  checkingShares = true;
+  try {
+    pendingShares = await api.pendingShares();
+    shareReadError = '';
+    renderPendingShares();
+    const network = snapshot.network;
+    if (pendingShares.length === 0 || network === null || recoveryPending || actionBusy || saving !== null || scanning || modalRoot.firstElementChild !== null) return;
+    const key = network.id + ':' + pendingShares.map(file => file.id).join(',');
+    if (shareFailureKey === key) return;
+    await perform(() => importIncomingShares(network.id, key));
+  } catch (error) {
+    const message = errorText(error);
+    if (message !== shareReadError) notify('Could not check shared files: ' + message);
+    shareReadError = message;
+  } finally { checkingShares = false; }
+}
+
+function canPreviewImage(file: SharedFile) {
+  return ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif'].includes(file.mimeType);
+}
+
+function resetImages() {
+  imageGeneration++;
+  for (const url of imageUrls.values()) URL.revokeObjectURL(url);
+  imageUrls.clear();
+  loadingImages.clear();
+  failedImages.clear();
+}
+
+function patchThumbnail(id: string, url: string | null) {
+  const card = [...document.querySelectorAll('[data-file-card]')].find(element => element.getAttribute('data-file-card') === id);
+  const button = card?.querySelector('.file-preview');
+  if (!(button instanceof HTMLButtonElement)) return;
+  const existing = button.querySelector('img');
+  if (url === null) {
+    existing?.remove();
+    if (button.querySelector('svg') === null) button.insertAdjacentHTML('afterbegin', icon('image'));
+    return;
+  }
+  if (existing instanceof HTMLImageElement) { existing.src = url; return; }
+  const image = document.createElement('img');
+  image.src = url;
+  image.alt = '';
+  image.loading = 'lazy';
+  button.querySelector('svg')?.remove();
+  button.prepend(image);
+}
+
+function renderFiles() {
+  const grid = document.querySelector('#file-grid');
+  if (grid === null) return;
+  const signature = JSON.stringify(snapshot.files);
+  if (signature === filesSignature) return;
+  filesSignature = signature;
+  const count = document.querySelector('#file-count');
+  if (count !== null) count.textContent = snapshot.files.length.toString();
+  for (const [id, url] of imageUrls) {
+    if (!snapshot.files.some(file => file.id === id)) { URL.revokeObjectURL(url); imageUrls.delete(id); }
+  }
+  grid.innerHTML = snapshot.files.length === 0 ? `<div class="files-empty"><div class="empty-mark">${icon('files')}</div><h2>No files yet</h2><button class="button secondary" data-action="add-files">${icon('plus')} Add your first file</button></div>` : [...snapshot.files].sort((a, b) => b.createdAt - a.createdAt).map(file => {
+    const url = imageUrls.get(file.id);
+    return `<article class="file-card" data-file-card="${esc(file.id)}"><button class="file-preview" data-open-file="${esc(file.id)}" aria-label="${esc((canPreviewImage(file) ? 'Preview ' : 'View ') + file.name)}" ${file.available ? '' : 'disabled'}>${url === undefined ? icon(canPreviewImage(file) ? 'image' : 'note') : `<img src="${esc(url)}" alt="" loading="lazy"/>`}<span class="file-type">${esc(file.name.split('.').pop()?.toUpperCase().slice(0, 8) ?? 'FILE')}</span></button><div class="file-info"><h2 title="${esc(file.name)}">${esc(file.name)}</h2><p>${fileSize(file.size)} <span>·</span> ${displayDate(file.createdAt)}</p><span class="file-availability ${file.available ? '' : 'pending'}">${icon(file.available ? 'check' : 'sync')}${file.available ? native ? 'Saved on device' : 'In this session' : 'Waiting for a nearby device'}</span></div><div class="file-actions"><button class="text-button" data-save-file="${esc(file.id)}" ${file.available ? '' : 'disabled'}>${icon('download')} Save file</button><button class="icon-button" data-delete-file="${esc(file.id)}" aria-label="${esc('Delete ' + file.name)}">${icon('trash')}</button></div></article>`;
+  }).join('');
+  imageObserver?.disconnect();
+  imageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const id = entry.target.getAttribute('data-file-card');
+      const file = snapshot.files.find(item => item.id === id);
+      if (file === undefined || !file.available || !canPreviewImage(file) || imageUrls.has(file.id) || loadingImages.has(file.id) || failedImages.has(file.id)) continue;
+      const generation = imageGeneration;
+      const networkId = snapshot.network?.id;
+      if (networkId === undefined) continue;
+      loadingImages.add(file.id);
+      // Decode one image at a time and retain only small thumbnails. A grid of
+      // high-resolution photos must not retain every original file in memory.
+      thumbnailQueue = thumbnailQueue.then(async () => {
+        if (generation !== imageGeneration || section !== 'files') return;
+        const content = await api.readFile(networkId, file.id);
+        if (generation !== imageGeneration || section !== 'files') return;
+        const thumbnail = await imageThumbnail(content);
+        if (generation !== imageGeneration || !snapshot.files.some(current => current.id === file.id)) return;
+        const url = URL.createObjectURL(thumbnail);
+        imageUrls.set(file.id, url);
+        patchThumbnail(file.id, url);
+        if (imageUrls.size > 64) {
+          const oldest = imageUrls.entries().next().value;
+          if (oldest !== undefined) { URL.revokeObjectURL(oldest[1]); imageUrls.delete(oldest[0]); patchThumbnail(oldest[0], null); }
+        }
+      }).catch(() => { failedImages.add(file.id); }).finally(() => loadingImages.delete(file.id));
+    }
+  }, { root: grid, rootMargin: '120px' });
+  for (const card of grid.querySelectorAll('[data-file-card]')) imageObserver.observe(card);
+}
+
+async function openFile(id: string) {
+  const networkId = snapshot.network?.id;
+  if (networkId === undefined) return;
+  const file = snapshot.files.find(entry => entry.id === id);
+  if (file === undefined || !file.available) return;
+  let image = '';
+  if (canPreviewImage(file)) {
+    const content = await api.readFile(networkId, id);
+    if (snapshot.network?.id !== networkId || !snapshot.files.some(entry => entry.id === id)) return;
+    modalImageUrl = URL.createObjectURL(fileBlob(content));
+    image = `<img class="full-image" src="${esc(modalImageUrl)}" alt="${esc(file.name)}"/>`;
+  }
+  openModal(`<h2 class="file-dialog-name">${esc(file.name)}</h2>${image}<p class="modal-copy">${fileSize(file.size)} · ${esc(file.mimeType)}</p><button class="button primary full-width" data-save-file="${esc(id)}">${icon('download')} Save file</button>${image.length === 0 ? '<p class="modal-fine">Save a copy to open it in your preferred app.</p>' : ''}`, 'Shared file');
+}
+
+async function saveFile(id: string) {
+  const networkId = snapshot.network?.id;
+  if (networkId === undefined) return;
+  const content = await api.readFile(networkId, id);
+  if (snapshot.network?.id !== networkId) return;
+  if (native) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const { writeFile } = await import('@tauri-apps/plugin-fs');
+    const path = await save({ defaultPath: content.name });
+    if (path === null) return;
+    await writeFile(path, Uint8Array.from(atob(content.dataBase64), char => char.charCodeAt(0)));
+    notify('File saved. Open it from your device’s files app.');
+  } else {
+    downloadPreviewFile(content);
+    notify('File ready to save.');
+  }
+}
+
+async function importFiles(networkId: string, files: File[]) {
+  if (fileBusy) return;
+  fileBusy = true;
+  render();
+  let imported = 0;
+  const failures: string[] = [];
+  try {
+    for (const file of files) {
+      try {
+        const content = await readSelectedFile(file);
+        const result = await api.importFile(networkId, content);
+        if (snapshot.network?.id !== networkId) throw new Error('The active network changed. Return to the original network to see your files.');
+        snapshot = result; imported++; renderFiles();
+      }
+      catch (error) { failures.push(errorText(error)); }
+    }
+  } finally { fileBusy = false; render(); }
+  if (failures.length > 0) notify((imported > 0 ? imported.toString() + ' added. ' : '') + failures.join(' '));
+  else notify(imported.toString() + (imported === 1 ? ' file added. ' : ' files added. ') + 'Other devices receive them when nearby.');
 }
 
 function renderList() {
@@ -92,17 +340,17 @@ function renderList() {
   list.innerHTML = notes.length > 0 ? notes.map(note => {
     const value = draft?.id === note.id ? draft : note;
     return `<button class="note-card ${selected === note.id ? 'active' : ''}" data-note="${esc(note.id)}" ${selected === note.id ? 'aria-current="true"' : ''}><span class="note-card-title">${esc(noteTitle(value))}</span><span class="note-card-preview">${esc(notePreview(value.body))}</span><span class="note-card-date">${displayDate(note.updatedAt)}<span class="note-card-arrow">${icon('arrow')}</span></span></button>`;
-  }).join('') : '<div class="list-empty">Your first thought<br/>belongs here.</div>';
+  }).join('') : '<div class="list-empty">No notes yet</div>';
 }
 
 function renderEditor() {
   const editor = document.querySelector('#editor');
   if (editor === null) return;
   if (draft === null) {
-    editor.innerHTML = `<div class="editor-empty"><div class="empty-mark">${icon('note')}</div><p class="eyebrow">Room for a thought</p><h2>Start with a blank page.</h2><p>A list, a little idea, something to remember.<br/>Your notes will find their way to your network.</p><button class="button secondary" data-action="new-note">${icon('plus')} Write your first note</button></div>`;
+    editor.innerHTML = `<div class="editor-empty"><div class="empty-mark">${icon('note')}</div><h2>No note selected</h2><button class="button secondary" data-action="new-note">${icon('plus')} Create note</button></div>`;
     return;
   }
-  editor.innerHTML = `<div class="editor-toolbar"><button class="text-button back-notes" data-action="back">${icon('back')} Notes</button><span class="editor-label">${icon('note')} Note</span><div class="editor-tools">${snapshot.notes.some(note => note.id === draft?.id) ? '' : '<button class="text-button" data-action="copy-recovered">Copy recovered text</button>'}<span id="save-state" class="save-state" aria-live="polite"></span><button class="icon-button delete-note" data-action="delete-note" aria-label="Delete this note">${icon('trash')}</button></div></div><div class="writing-area"><input id="note-title" class="note-title" aria-label="Note title" placeholder="Untitled note" maxlength="256" autocomplete="off" value="${esc(draft.title)}"/><textarea id="note-body" class="note-body" aria-label="Note text" placeholder="Let a thought land here…" spellcheck="true">${esc(draft.body)}</textarea></div><div class="editor-bottom"><span id="word-count"></span><span>Yours, even offline</span></div>`;
+  editor.innerHTML = `<div class="editor-toolbar"><button class="text-button back-notes" data-action="back">${icon('back')} Notes</button><span class="editor-label">${icon('note')} Note</span><div class="editor-tools">${snapshot.notes.some(note => note.id === draft?.id) ? '' : '<button class="text-button" data-action="copy-recovered">Copy recovered text</button>'}<button id="save-state" class="save-state" aria-live="polite" type="button"></button><button class="icon-button delete-note" data-action="delete-note" aria-label="Delete this note">${icon('trash')}</button></div></div><div class="writing-area"><input id="note-title" class="note-title" aria-label="Note title" placeholder="Untitled note" maxlength="256" autocomplete="off" value="${esc(draft.title)}"/><textarea id="note-body" class="note-body" aria-label="Note text" placeholder="Start writing…" spellcheck="true">${esc(draft.body)}</textarea></div><div class="editor-bottom"><span id="word-count"></span></div>`;
   renderSaveState();
   updateWordCount();
 }
@@ -112,7 +360,7 @@ function renderStatus() {
   if (status === null) return;
   const connected = snapshot.status.peers > 0;
   const error = snapshot.status.error ?? getDiscoveryError();
-  status.innerHTML = `<div class="connection-line"><span class="status-dot ${connected ? '' : 'idle'}"></span><strong>${connected ? `${snapshot.status.peers.toString()} nearby ${snapshot.status.peers === 1 ? 'device' : 'devices'}` : 'Ready for nearby devices'}</strong><button class="icon-button sync-button" data-action="sync" aria-label="Retry synchronization">${icon('sync')}</button></div><p class="connection-copy">${error.length > 0 ? esc(error) : connected ? 'Your notes sync automatically.' : 'Open Murmur on the same Wi-Fi to sync.'}</p>`;
+  status.innerHTML = `<div class="connection-line"><span class="status-dot ${connected ? '' : 'idle'}"></span><strong>${connected ? `${snapshot.status.peers.toString()} nearby ${snapshot.status.peers === 1 ? 'device' : 'devices'}` : 'Ready for nearby devices'}</strong><button class="icon-button sync-button" data-action="sync" aria-label="Retry synchronization">${icon('sync')}</button></div><p class="connection-copy">${error.length > 0 ? esc(error) : connected ? 'Notes and files sync automatically.' : 'Open Murmur on the same Wi-Fi to sync.'}</p>`;
 }
 
 function renderSaveState(message?: string, failed = false) {
@@ -281,7 +529,7 @@ async function perform(action: () => Promise<void>) {
   mutation++;
   try { await action(); }
   catch (error) { notify(errorText(error)); }
-  finally { actionBusy = false; mutation++; }
+  finally { actionBusy = false; mutation++; if (pendingShares.length > 0) requestIncomingCheck(); }
 }
 
 function openModal(content: string, label: string) {
@@ -295,30 +543,36 @@ function openModal(content: string, label: string) {
 }
 
 function closeModal() {
+  if (modalRoot.firstElementChild === null) return;
   modalRoot.innerHTML = '';
-  app.inert = false;
+  if (modalImageUrl !== null) { URL.revokeObjectURL(modalImageUrl); modalImageUrl = null; }
+  app.inert = recoveryPending;
   modalPreviousFocus?.focus();
+  requestIncomingCheck();
 }
 
 function networkForm(kind: 'create' | 'join') {
   const switching = snapshot.network !== null;
-  const switchHint = switching ? '<p class="switch-notice">This switches your active network. Existing notes stay on this device; keep its invitation to return.</p>' : '';
+  const switchHint = switching ? '<p class="switch-notice">Existing notes and files stay on this device. Keep the invitation to return.</p>' : '';
   if (kind === 'create') {
-    openModal(`<div class="modal-symbol">${icon('plus')}</div><p class="eyebrow">Start a small circle</p><h2>Create a network</h2><p class="modal-copy">Give your shared notebook a name. Then invite another device with a QR code.</p><form id="create-network-form"><label for="network-name">Network name</label><input id="network-name" name="name" placeholder="Our little corner" maxlength="64" required autofocus autocomplete="off"/>${switchHint}<button class="button primary full-width" type="submit">Create network ${icon('arrow')}</button></form><p class="modal-fine">No sign-up. Your device makes the connection.</p>`, 'Create a network');
+    openModal(`<h2>Create a network</h2><form id="create-network-form"><label for="network-name">Network name</label><input id="network-name" name="name" placeholder="Network name" maxlength="64" required autofocus autocomplete="off"/>${switchHint}<button class="button primary full-width" type="submit">Create network ${icon('arrow')}</button></form>`, 'Create a network');
   } else {
-    openModal(`<div class="modal-symbol">${icon('scan')}</div><p class="eyebrow">A place to belong</p><h2>Join a network</h2><p class="modal-copy">Scan the invitation on another device. You'll share notes whenever you're on the same Wi-Fi.</p><button class="button primary full-width" data-action="scan">${icon('scan')} Scan QR code</button><div class="divider"><span>or paste an invitation</span></div><form id="join-network-form"><label class="sr-only" for="network-invite">Network invitation</label><textarea id="network-invite" name="invite" class="invite-input" placeholder="murmur://join#…" required spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>${switchHint}<button class="button secondary full-width" type="submit">Join network ${icon('arrow')}</button></form>`, 'Join a network');
+    openModal(`<h2>Join a network</h2><p class="modal-copy">${canScan || desktopCameraAvailable() ? 'Scan a QR code or enter the invitation phrase.' : 'Enter the invitation phrase from another device.'}</p>${canScan || desktopCameraAvailable() ? `<button class="button primary full-width" data-action="scan">${icon('scan')} Scan QR code</button><div class="divider"><span>or enter the phrase</span></div>` : ''}<form id="join-network-form"><label for="network-invite">Invitation phrase</label><textarea id="network-invite" name="invite" class="invite-input" placeholder="Invitation words or Murmur link" required spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>${switchHint}<button class="button secondary full-width" type="submit">Join network ${icon('arrow')}</button></form>`, 'Join a network');
   }
 }
 
 async function shareNetwork() {
   if (snapshot.network === null || !await flushSave()) return;
   const network = snapshot.network;
-  const qr = await QRCode.toDataURL(network.invite, { width: 640, margin: 3, errorCorrectionLevel: 'M', color: { dark: '#213d2eff', light: '#ffffffff' } });
-  openModal(`<p class="eyebrow">Bring another device closer</p><h2>${esc(network.name)}</h2><p class="modal-copy">Open Murmur on the other device and choose <strong>Join a network</strong>.</p><div class="qr-card"><img class="invite-qr" src="${qr}" alt="QR invitation for ${esc(network.name)}"/><span>Scan to join this network</span></div><div class="network-id"><span>NETWORK ID</span><code>${esc(network.id)}</code></div><button class="button secondary full-width" data-action="copy-invite">${icon('copy')} Copy invitation</button><p class="modal-fine">This code contains your shared secret. Anyone with it can read and edit this network's notes.</p>`, 'Invite a device');
+  const qr = await QRCode.toDataURL(network.invite, { width: 640, margin: 3, errorCorrectionLevel: 'M', color: { dark: '#14232eff', light: '#ffffffff' } });
+  openModal(`<h2>${esc(network.name)}</h2><p class="modal-copy">Open Murmur on the other device and choose <strong>Join a network</strong>.</p><div class="qr-card"><img class="invite-qr" src="${qr}" alt="QR invitation for ${esc(network.name)}"/><span>Scan to join this network</span></div><section class="phrase-section" aria-label="Invitation phrase"><h3>Invitation phrase</h3><ol class="phrase-grid">${network.phrase.split(/\s+/).map(word => `<li>${esc(word)}</li>`).join('')}</ol></section><button class="button secondary full-width" data-action="copy-invite">${icon('copy')} Copy phrase</button><p class="modal-fine">Anyone with this phrase or QR code can access this network.</p>`, 'Invite a device');
 }
 
 async function establishNetwork(next: Snapshot) {
+  recoveryPending = true;
+  resetImages();
   snapshot = next;
+  section = 'notes';
   selected = null;
   draft = null;
   mobileEditor = false;
@@ -327,14 +581,46 @@ async function establishNetwork(next: Snapshot) {
   render();
   try { await recoverDraft(); }
   catch (error) { notify('Could not recover a saved draft: ' + errorText(error)); }
-  finally { app.inert = false; }
+  finally { recoveryPending = false; app.inert = modalRoot.firstElementChild !== null; }
   try { await initializeDiscovery(snapshot); }
   catch (error) { notify(`Notes are ready. Nearby discovery: ${errorText(error)}`); }
 }
 
+async function scanWithDesktopCamera() {
+  if (!await flushSave()) return;
+  const controller = new AbortController();
+  desktopScanController = controller;
+  scanning = true;
+  scanCancelled = false;
+  openModal('<h2>Scan an invitation</h2><video id="desktop-camera" aria-label="Camera preview" muted playsinline></video><p id="camera-status" class="modal-copy" role="status">Starting camera…</p><button class="button secondary full-width" data-action="cancel-scan">Cancel scanning</button>', 'Scan an invitation');
+  modalRoot.querySelector('.modal')?.classList.add('camera-modal');
+  try {
+    const video = document.querySelector('#desktop-camera');
+    if (!(video instanceof HTMLVideoElement)) throw new Error('The camera preview could not open.');
+    const content = await scanDesktopInvitation(video, controller.signal, message => {
+      const status = document.querySelector('#camera-status');
+      if (status !== null) status.textContent = message;
+    });
+    if (content !== null && !scanCancelled) {
+      desktopScanController = null;
+      scanning = false;
+      await establishNetwork(await api.joinNetwork(content));
+      notify('Network joined.');
+    } else networkForm('join');
+  } catch (error) {
+    networkForm('join');
+    if (!scanCancelled) notify(errorText(error));
+  } finally {
+    controller.abort();
+    desktopScanController = null;
+    scanning = false;
+  }
+}
+
 async function scanInvitation() {
-  if (!native) {
-    notify('QR scanning is available in the Android and iOS app. You can paste an invitation in this browser preview.');
+  if (!canScan && desktopCameraAvailable()) { await scanWithDesktopCamera(); return; }
+  if (!canScan) {
+    notify('Camera access is unavailable here. Enter an invitation phrase instead.');
     const field = document.querySelector('#network-invite');
     if (field instanceof HTMLTextAreaElement) field.focus();
     return;
@@ -358,7 +644,7 @@ async function scanInvitation() {
       document.documentElement.classList.remove('scanning');
       scanning = false;
       await establishNetwork(await api.joinNetwork(content));
-      notify('You’re in. Your notes will arrive when another device is nearby.');
+      notify('Network joined.');
     }
   } catch (error) {
     if (!scanCancelled) notify(`Couldn't scan: ${errorText(error)}`);
@@ -371,9 +657,47 @@ async function scanInvitation() {
 
 async function handleAction(action: string) {
   switch (action) {
+    case 'import-shares': requestIncomingCheck(true); break;
+    case 'discard-shares':
+      openModal('<h2>Discard shared files?</h2><p class="modal-copy">Removes queued copies from Murmur. Original files are unchanged.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Keep files</button><button class="button danger" data-action="confirm-discard-shares">Discard files</button></div>', 'Discard shared files');
+      break;
+    case 'confirm-discard-shares':
+      await api.discardShares();
+      pendingShares = [];
+      shareFailureKey = null;
+      closeModal();
+      renderPendingShares();
+      notify('Shared files discarded.');
+      break;
+    case 'nav-notes': case 'nav-files': case 'nav-settings':
+      if (!await flushSave()) return;
+      if (section === 'files' && action !== 'nav-files') resetImages();
+      section = action === 'nav-files' && snapshot.network !== null ? 'files' : action === 'nav-settings' ? 'settings' : 'notes';
+      mobileEditor = false;
+      render();
+      break;
+    case 'add-files': {
+      const picker = document.querySelector('#file-picker');
+      if (picker instanceof HTMLInputElement) picker.click();
+      break;
+    }
+    case 'confirm-delete-file':
+      if (fileToDelete === null) return;
+      {
+        const result = await api.deleteFile(fileToDelete.networkId, fileToDelete.id);
+        if (snapshot.network?.id !== fileToDelete.networkId) return;
+        snapshot = result;
+      }
+      fileToDelete = null;
+      closeModal();
+      renderFiles();
+      break;
     case 'create-network': if (await flushSave()) networkForm('create'); break;
     case 'join-network': if (await flushSave()) networkForm('join'); break;
-    case 'close-modal': closeModal(); break;
+    case 'close-modal':
+      if (desktopScanController !== null) { scanCancelled = true; desktopScanController.abort(); }
+      else closeModal();
+      break;
     case 'share': await shareNetwork(); break;
     case 'new-note': {
       if (!await flushSave()) return;
@@ -427,11 +751,11 @@ async function handleAction(action: string) {
     }
     case 'network-menu':
       if (!await flushSave() || snapshot.network === null) return;
-      openModal(`<p class="eyebrow">Your network</p><h2>${esc(snapshot.network.name)}</h2><p class="modal-copy">Everyone in this network can read and edit its notes. Devices find each other on the same Wi-Fi.</p><div class="network-options"><button class="button secondary full-width" data-action="share">${icon('share')} Invite a device</button><button class="button secondary full-width" data-action="create-network">${icon('plus')} Create another network</button><button class="button secondary full-width" data-action="join-network">${icon('scan')} Join another network</button></div><p class="modal-fine">Switching keeps your existing notes on this device. Save the invitation to come back.</p>`, 'Manage network');
+      openModal(`<h2>${esc(snapshot.network.name)}</h2><p class="modal-copy">Anyone with an invitation can read and edit this network’s notes and files.</p><div class="network-options"><button class="button secondary full-width" data-action="share">${icon('share')} Invite a device</button><button class="button secondary full-width" data-action="create-network">${icon('plus')} Create another network</button><button class="button secondary full-width" data-action="join-network">${icon('scan')} Join another network</button></div><p class="modal-fine">Keep the invitation to return after switching networks.</p>`, 'Manage network');
       break;
     case 'copy-invite':
       if (snapshot.network === null) return;
-      try { await navigator.clipboard.writeText(snapshot.network.invite); notify('Invitation copied. Share it with someone you trust.'); }
+      try { await navigator.clipboard.writeText(snapshot.network.phrase); notify('Invitation phrase copied.'); }
       catch {
         const existing = modalRoot.querySelector('#copy-fallback');
         if (existing instanceof HTMLTextAreaElement) { existing.select(); break; }
@@ -439,11 +763,11 @@ async function handleAction(action: string) {
         area.id = 'copy-fallback';
         area.className = 'invite-input';
         area.readOnly = true;
-        area.value = snapshot.network.invite;
-        area.setAttribute('aria-label', 'Invitation to copy');
+        area.value = snapshot.network.phrase;
+        area.setAttribute('aria-label', 'Invitation phrase to copy');
         modalRoot.querySelector('.modal')?.append(area);
         area.select();
-        notify('Select and copy the invitation below.');
+        notify('Select and copy the phrase below.');
       }
       break;
     case 'sync':
@@ -452,12 +776,14 @@ async function handleAction(action: string) {
       snapshot = await api.sync();
       updateDraftFromSnapshot();
       renderList();
+      renderFiles();
       renderStatus();
       notify(native ? 'Looking for your nearby devices.' : 'LAN sync runs in the Android and iOS app.');
       break;
     case 'scan': await scanInvitation(); break;
     case 'cancel-scan': {
       scanCancelled = true;
+      if (desktopScanController !== null) { desktopScanController.abort(); return; }
       const scanner = await import('@tauri-apps/plugin-barcode-scanner');
       await scanner.cancel();
       document.documentElement.classList.remove('scanning');
@@ -478,11 +804,40 @@ document.addEventListener('click', event => {
     else void perform(() => handleAction(action));
     return;
   }
+  const theme = target.closest('button[data-theme]')?.getAttribute('data-theme');
+  if (theme !== null && theme !== undefined) {
+    void perform(async () => {
+      settings = await api.setTheme(parseTheme(theme));
+      applyTheme(settings.theme);
+      for (const choice of document.querySelectorAll('button[data-theme]')) {
+        const active = choice.getAttribute('data-theme') === settings.theme;
+        choice.classList.toggle('selected', active);
+        choice.setAttribute('aria-pressed', active ? 'true' : 'false');
+        choice.querySelector('.icon')?.remove();
+        if (active) choice.insertAdjacentHTML('beforeend', icon('check'));
+      }
+    });
+    return;
+  }
+  const fileOpen = target.closest('[data-open-file]')?.getAttribute('data-open-file');
+  if (fileOpen !== undefined && fileOpen !== null) { void perform(() => openFile(fileOpen)); return; }
+  const fileSave = target.closest('[data-save-file]')?.getAttribute('data-save-file');
+  if (fileSave !== undefined && fileSave !== null) { void perform(() => saveFile(fileSave)); return; }
+  const fileDelete = target.closest('[data-delete-file]')?.getAttribute('data-delete-file');
+  if (fileDelete !== undefined && fileDelete !== null) {
+    const file = snapshot.files.find(entry => entry.id === fileDelete);
+    if (file === undefined) return;
+    const networkId = snapshot.network?.id;
+    if (networkId === undefined) return;
+    fileToDelete = { id: file.id, networkId };
+    openModal(`<h2>Delete this file?</h2><p class="modal-copy">“${esc(file.name)}” will be deleted from this network on all devices when they connect. Copies saved outside Murmur stay untouched.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Keep file</button><button class="button danger" data-action="confirm-delete-file">Delete file</button></div>`, 'Delete file');
+    return;
+  }
   const note = target.closest('[data-note]')?.getAttribute('data-note');
   if (note !== null && note !== undefined) void perform(() => selectNote(note));
   if (target.closest('.brand') !== null) {
     event.preventDefault();
-    void perform(async () => { if (await flushSave()) { mobileEditor = false; render(); } });
+    void perform(async () => { if (await flushSave()) { section = 'notes'; mobileEditor = false; render(); } });
   }
   if (target.closest('#save-state') !== null && draft?.dirty === true) void flushSave();
 });
@@ -505,6 +860,23 @@ document.addEventListener('submit', event => {
       await establishNetwork(next);
     } finally { button.disabled = false; }
   });
+});
+
+document.addEventListener('change', event => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.id !== 'file-picker' || target.files === null) return;
+  const files = Array.from(target.files);
+  target.value = '';
+  const networkId = snapshot.network?.id;
+  if (files.length > 0 && networkId !== undefined) void perform(() => importFiles(networkId, files));
+});
+
+document.addEventListener('focusin', event => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+  if (section !== 'notes' || draft === null || (target.id !== 'note-title' && target.id !== 'note-body')) return;
+  mobileEditor = true;
+  target.closest('.notebook-shell')?.classList.add('editor-open');
 });
 
 document.addEventListener('input', event => {
@@ -534,7 +906,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Tab' && modalRoot.firstElementChild !== null) {
     const focusable = [...modalRoot.querySelectorAll('button, input, textarea, [tabindex="0"]')].filter((node): node is HTMLElement => node instanceof HTMLElement && !node.hasAttribute('disabled'));
     const first = focusable[0];
-    const last = focusable.at(-1);
+    const last = focusable[focusable.length - 1];
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
@@ -550,6 +922,7 @@ async function refresh() {
     snapshot = next;
     updateDraftFromSnapshot();
     renderList();
+    renderFiles();
     renderStatus();
   } catch (error) { renderSaveState(`Connection to app interrupted: ${errorText(error)}`, true); }
 }
@@ -559,8 +932,10 @@ document.addEventListener('visibilitychange', () => {
   else if (started) {
     void initializeDiscovery(snapshot).catch(error => notify(`Nearby discovery: ${errorText(error)}`));
     void refresh();
+    requestIncomingCheck(true);
   }
 });
+window.addEventListener('focus', () => requestIncomingCheck(true));
 window.addEventListener('pagehide', () => { scheduleBackup(); void flushSave(); });
 window.addEventListener('murmur:discovery-error', event => {
   renderStatus();
@@ -574,18 +949,30 @@ window.addEventListener('beforeunload', event => {
 });
 
 async function start() {
+  recoveryPending = true;
   app.inert = true;
   try {
     snapshot = await api.bootstrap();
+    try { canScan = await api.canScan(); }
+    catch (error) { notify('Could not check camera availability. You can paste invitations. ' + errorText(error)); }
+    try { settings = await api.getSettings(); applyTheme(settings.theme); }
+    catch (error) { notify('Could not load your appearance preference: ' + errorText(error)); }
     render();
     try { await recoverDraft(); }
     catch (error) { notify('Could not recover a saved draft: ' + errorText(error)); }
     started = true;
-    app.inert = false;
+    recoveryPending = false;
+    app.inert = modalRoot.firstElementChild !== null;
     await initializeDiscovery(snapshot).catch(error => notify(`Your notes are ready. Nearby discovery: ${errorText(error)}`));
-    setInterval(() => void refresh(), 3000);
+    if (native && !shareListenerReady) {
+      try { await api.listenForShares(() => requestIncomingCheck(true)); shareListenerReady = true; }
+      catch (error) { notify('Shared files will be checked when the app refreshes. ' + errorText(error)); }
+    }
+    requestIncomingCheck();
+    setInterval(() => { void refresh(); void checkIncomingShares(); }, 3000);
   } catch (error) {
-    app.inert = false;
+    recoveryPending = false;
+    app.inert = modalRoot.firstElementChild !== null;
     app.innerHTML = `<main class="startup-error">${brand()}<h1>Couldn't open your notebook.</h1><p>${esc(errorText(error))}</p><button class="button primary" id="retry-start">Try again</button></main>`;
     document.querySelector('#retry-start')?.addEventListener('click', () => void start());
   }

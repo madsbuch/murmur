@@ -1,0 +1,43 @@
+name: MurmurShare
+options:
+  deploymentTarget:
+    macOS: "12.0"
+packages:
+  MurmurShareCore:
+    path: ..
+targets:
+  MurmurShare:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: ShareViewController.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.murmur.notes.share
+        PRODUCT_NAME: MurmurShare
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "12.0"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_ENTITLEMENTS: Entitlements.plist
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "0.3.0"
+    dependencies:
+      - package: MurmurShareCore
+      - sdk: AppKit.framework
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Murmur
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 32
+              NSExtensionActivationSupportsImageWithMaxCount: 32

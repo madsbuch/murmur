@@ -4,7 +4,7 @@
   <key>NSCameraUsageDescription</key>
   <string>Scan a Murmur invitation to join a nearby note network.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Find nearby devices in your Murmur network and share notes directly over Wi-Fi.</string>
+  <string>Find nearby devices in your Murmur network and share notes and files directly over Wi-Fi.</string>
   <key>NSBonjourServices</key>
   <array><string>_murmur._tcp</string></array>
   <key>UIFileSharingEnabled</key><false/>

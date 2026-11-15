@@ -7,6 +7,9 @@ fileGroups: [../../src]
 configs:
   debug: debug
   release: release
+packages:
+  MurmurShareCore:
+    path: ../../apple-share
 settingGroups:
   app:
     base:
@@ -56,10 +59,12 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.2.0
-        CFBundleVersion: "0.2.0"
+        CFBundleShortVersionString: 0.3.0
+        CFBundleVersion: "0.3.0"
     entitlements:
       path: murmur_iOS/murmur_iOS.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.murmur.notes]
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
@@ -75,6 +80,8 @@ targets:
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
       groups: [app]
     dependencies:
+      - target: MurmurShare_iOS
+        embed: true
       - framework: libapp.a
         embed: false
       - sdk: CoreGraphics.framework
@@ -92,3 +99,38 @@ targets:
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+  MurmurShare_iOS:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: ../../apple-share/iOS/ShareViewController.swift
+    settings:
+      base:
+        PRODUCT_NAME: MurmurShare
+        PRODUCT_BUNDLE_IDENTIFIER: app.murmur.notes.share
+        SWIFT_VERSION: "6.0"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "0.3.0"
+    entitlements:
+      path: ../../apple-share/iOS/Entitlements.plist
+      properties:
+        com.apple.security.application-groups: [group.app.murmur.notes]
+    info:
+      path: ../../apple-share/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Murmur
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 32
+              NSExtensionActivationSupportsImageWithMaxCount: 32
+    dependencies:
+      - package: MurmurShareCore
+      - sdk: UIKit.framework

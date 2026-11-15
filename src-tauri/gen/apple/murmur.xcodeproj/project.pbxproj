@@ -8,43 +8,91 @@
 
 /* Begin PBXBuildFile section */
 		1B2C36EC1E0BB5C8D319D18F /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE3C8FEC35B5052E3C749056 /* QuartzCore.framework */; };
+		2141D9053A9FF9E3A5FDCCA4 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8A146B315F6BD957E3437879 /* UIKit.framework */; };
 		25BECAFE744C8CB6297961D0 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8A146B315F6BD957E3437879 /* UIKit.framework */; };
+		34712E3C41B2DF57F7583C75 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB784430B7579943EB0E394E /* ShareViewController.swift */; };
 		41BB2EF58513EA553BC0114B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F734B58607B4FDC1FAAD1282 /* WebKit.framework */; };
 		4D7013291E94BE8247BA70E6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = B4EEF4CF44A26DAC45A4F626 /* assets */; };
 		5EAE09FF6B9B56062FAE9830 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0ABA1DCECE3E3BEE296504CF /* Security.framework */; };
 		648B12860F7AAE2076867327 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 8702B273F79DE8D0BE088821 /* main.mm */; };
 		845F26F0D4475011127F35D9 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = F0596FA4027AC8EA144F4121 /* LaunchScreen.storyboard */; };
+		85CD08DB4764BC7C87DF7243 /* MurmurShare_iOS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 8CC56141235C2110B7B96A11 /* MurmurShare_iOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8764F4AACEBA0353B1287546 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C62BCB420AF55040212CA30D /* Metal.framework */; };
 		8BF3B9B36313797C860DB908 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 29C39ADB1034556670459172 /* CoreGraphics.framework */; };
 		A2C6FC92E5FBDA746320727E /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7E43F942E4AACC6960B9BEDE /* MetalKit.framework */; };
 		B2AAF849CE9BE321AE250AC8 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A8EA53349C03616544CA3A03 /* libapp.a */; };
 		E0961CFFE0311A8681B9E2AD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 907CFE667794E2FB7FE5A791 /* Assets.xcassets */; };
+		EF0E27CFD3D9C9C553D77FC2 /* MurmurShareCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0FDF41580DD840CBDF688F87 /* MurmurShareCore */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2229FE65441659C3DC5C4B7A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3924606EA9F196CF055AEF9C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EA084034B434E89BCE75103F;
+			remoteInfo = MurmurShare_iOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		576C1B12994F68154B65102B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				85CD08DB4764BC7C87DF7243 /* MurmurShare_iOS.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		0881781539A24A2B385F14EE /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		0ABA1DCECE3E3BEE296504CF /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		0DEA35B7139A7268F9893315 /* incoming.rs */ = {isa = PBXFileReference; path = incoming.rs; sourceTree = "<group>"; };
 		21CD18BCB14CE5F8C2A35613 /* engine.rs */ = {isa = PBXFileReference; path = engine.rs; sourceTree = "<group>"; };
 		242D6411A2EEA1DB56F961C1 /* murmur_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = murmur_iOS.entitlements; sourceTree = "<group>"; };
 		29C39ADB1034556670459172 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		2A32208E5BBDA5BCFD9F92BD /* apple-share */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "apple-share"; path = "../../apple-share"; sourceTree = SOURCE_ROOT; };
 		2E32A91B54E72A2E08C941FF /* transport.rs */ = {isa = PBXFileReference; path = transport.rs; sourceTree = "<group>"; };
+		518D059620B9A213711FBFE5 /* appearance.rs */ = {isa = PBXFileReference; path = appearance.rs; sourceTree = "<group>"; };
 		54C0CBE4DAC0192094CC3580 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		6091497A16E34F8270EE9010 /* storage.rs */ = {isa = PBXFileReference; path = storage.rs; sourceTree = "<group>"; };
+		65168395003F2C6A19741FE7 /* files.rs */ = {isa = PBXFileReference; path = files.rs; sourceTree = "<group>"; };
+		6BDB6A988C7653689D92882A /* schema.rs */ = {isa = PBXFileReference; path = schema.rs; sourceTree = "<group>"; };
 		7E43F942E4AACC6960B9BEDE /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		8702B273F79DE8D0BE088821 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		8A146B315F6BD957E3437879 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		8CC56141235C2110B7B96A11 /* MurmurShare_iOS.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MurmurShare_iOS.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		907CFE667794E2FB7FE5A791 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A8EA53349C03616544CA3A03 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		B4EEF4CF44A26DAC45A4F626 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		BB784430B7579943EB0E394E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		C62BCB420AF55040212CA30D /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		CE3C8FEC35B5052E3C749056 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		EDC9C45F2F29F63773D6913F /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		F0596FA4027AC8EA144F4121 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		F1C0169A16DDBE4DB9878FE5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F482F974B54C7EE623A9AE59 /* native_shares.rs */ = {isa = PBXFileReference; path = native_shares.rs; sourceTree = "<group>"; };
 		F60CA59AD2E99A5A6D224993 /* murmur_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = murmur_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F734B58607B4FDC1FAAD1282 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		FE3BA4A53506601B6A9E0D94 /* invitations.rs */ = {isa = PBXFileReference; path = invitations.rs; sourceTree = "<group>"; };
+		FE8770B16CFC99765F80C9F2 /* apple_shares.rs */ = {isa = PBXFileReference; path = apple_shares.rs; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		8A60611F5C895BA64873CD75 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EF0E27CFD3D9C9C553D77FC2 /* MurmurShareCore in Frameworks */,
+				2141D9053A9FF9E3A5FDCCA4 /* UIKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8E11F98D2297F8E0E720EC27 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -87,7 +135,9 @@
 				907CFE667794E2FB7FE5A791 /* Assets.xcassets */,
 				F0596FA4027AC8EA144F4121 /* LaunchScreen.storyboard */,
 				DBA6496492712AADD303FF99 /* Externals */,
+				F179140923CC1AD41B2ACFA6 /* iOS */,
 				220DFEFE60D98C8FA84A107F /* murmur_iOS */,
+				7E90545F4790F68B33B4B9F7 /* Packages */,
 				21807B6F25E8CA15ADA4F501 /* Sources */,
 				F1B906E30E4CE563C6FADD31 /* src */,
 				8F42FBAE438CDB58E64E419F /* Frameworks */,
@@ -99,8 +149,17 @@
 			isa = PBXGroup;
 			children = (
 				F60CA59AD2E99A5A6D224993 /* murmur_iOS.app */,
+				8CC56141235C2110B7B96A11 /* MurmurShare_iOS.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		7E90545F4790F68B33B4B9F7 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				2A32208E5BBDA5BCFD9F92BD /* apple-share */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 		830BA530A445578C805F0EE2 /* murmur */ = {
@@ -142,16 +201,47 @@
 			path = Externals;
 			sourceTree = "<group>";
 		};
+		F179140923CC1AD41B2ACFA6 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				BB784430B7579943EB0E394E /* ShareViewController.swift */,
+			);
+			name = iOS;
+			path = "../../apple-share/iOS";
+			sourceTree = "<group>";
+		};
 		F1B906E30E4CE563C6FADD31 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				518D059620B9A213711FBFE5 /* appearance.rs */,
+				FE8770B16CFC99765F80C9F2 /* apple_shares.rs */,
 				21CD18BCB14CE5F8C2A35613 /* engine.rs */,
+				65168395003F2C6A19741FE7 /* files.rs */,
+				0DEA35B7139A7268F9893315 /* incoming.rs */,
+				FE3BA4A53506601B6A9E0D94 /* invitations.rs */,
 				0881781539A24A2B385F14EE /* lib.rs */,
 				EDC9C45F2F29F63773D6913F /* main.rs */,
+				F482F974B54C7EE623A9AE59 /* native_shares.rs */,
+				6BDB6A988C7653689D92882A /* schema.rs */,
+				6091497A16E34F8270EE9010 /* storage.rs */,
 				2E32A91B54E72A2E08C941FF /* transport.rs */,
 			);
 			name = src;
 			path = ../../src;
+			sourceTree = "<group>";
+		};
+		"TEMP_3269500D-AC88-4915-A0BF-96B2FB9FFBF1" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_FC9B6EEF-01AA-454E-8EF2-9CB2FB142EA3" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -165,10 +255,12 @@
 				AAF41AC6D736B4F0014FAA95 /* Sources */,
 				6AD8E25FC1A4C6BE0027318D /* Resources */,
 				8E11F98D2297F8E0E720EC27 /* Frameworks */,
+				576C1B12994F68154B65102B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				6AE67247EDE62527F75C6B18 /* PBXTargetDependency */,
 			);
 			name = murmur_iOS;
 			packageProductDependencies = (
@@ -176,6 +268,25 @@
 			productName = murmur_iOS;
 			productReference = F60CA59AD2E99A5A6D224993 /* murmur_iOS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		EA084034B434E89BCE75103F /* MurmurShare_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4C1DC006236F7C7DEB9CB81B /* Build configuration list for PBXNativeTarget "MurmurShare_iOS" */;
+			buildPhases = (
+				2EFC876812A1C81FD922EB71 /* Sources */,
+				8A60611F5C895BA64873CD75 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MurmurShare_iOS;
+			packageProductDependencies = (
+				0FDF41580DD840CBDF688F87 /* MurmurShareCore */,
+			);
+			productName = MurmurShare_iOS;
+			productReference = 8CC56141235C2110B7B96A11 /* MurmurShare_iOS.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -197,12 +308,16 @@
 			);
 			mainGroup = 3F00CC86573A2B2C66F414C3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5F967445CD98DE271A92D660 /* XCLocalSwiftPackageReference "../../apple-share" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 50AB554B55D5F4DD4CA30EB9 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				A7FBA72B88DC8BF2989084B4 /* murmur_iOS */,
+				EA084034B434E89BCE75103F /* MurmurShare_iOS */,
 			);
 		};
 /* End PBXProject section */
@@ -245,6 +360,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		2EFC876812A1C81FD922EB71 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				34712E3C41B2DF57F7583C75 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AAF41AC6D736B4F0014FAA95 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -254,6 +377,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6AE67247EDE62527F75C6B18 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EA084034B434E89BCE75103F /* MurmurShare_iOS */;
+			targetProxy = 2229FE65441659C3DC5C4B7A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		05D9B708B7263394F8FC8664 /* debug */ = {
@@ -381,6 +512,52 @@
 			};
 			name = debug;
 		};
+		3575784C50644779E02642DD /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "../../apple-share/iOS/Entitlements.plist";
+				CURRENT_PROJECT_VERSION = 0.3.0;
+				INFOPLIST_FILE = "../../apple-share/iOS/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.murmur.notes.share;
+				PRODUCT_NAME = MurmurShare;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = release;
+		};
+		55F5AA3741389F84AFD48477 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "../../apple-share/iOS/Entitlements.plist";
+				CURRENT_PROJECT_VERSION = 0.3.0;
+				INFOPLIST_FILE = "../../apple-share/iOS/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.murmur.notes.share;
+				PRODUCT_NAME = MurmurShare;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = debug;
+		};
 		E55079E8B23739C285CF37FB /* release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -449,6 +626,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = debug;
 		};
+		4C1DC006236F7C7DEB9CB81B /* Build configuration list for PBXNativeTarget "MurmurShare_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				55F5AA3741389F84AFD48477 /* debug */,
+				3575784C50644779E02642DD /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
 		8C844AED9878FD3EDF0C99A2 /* Build configuration list for PBXProject "murmur" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -459,6 +645,20 @@
 			defaultConfigurationName = debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		5F967445CD98DE271A92D660 /* XCLocalSwiftPackageReference "../../apple-share" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../apple-share";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0FDF41580DD840CBDF688F87 /* MurmurShareCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MurmurShareCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 3924606EA9F196CF055AEF9C /* Project object */;
 }

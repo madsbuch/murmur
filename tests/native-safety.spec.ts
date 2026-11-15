@@ -4,17 +4,18 @@ import type { DraftBackup, Snapshot } from '../src/types';
 import { parseDraft, parseSnapshot, record } from '../src/validation';
 
 const initial: Snapshot = {
-  network: { id: 'network', name: 'Native notebook', invite: 'murmur://join#test' },
+  network: { id: 'network', name: 'Native notebook', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' },
   notes: [{ id: 'note', title: 'Stored title', body: 'Stored text', updatedAt: 1 }],
-  heads: ['revision'], status: { peers: 0, lastSync: null, error: null },
+  files: [], heads: ['revision'], status: { peers: 0, lastSync: null, error: null },
   deviceId: 'device', listenerPort: 0,
 };
 const backup: DraftBackup = { networkId: 'network', id: 'note', title: 'Recovered title', body: 'Recovered typing', baseHeads: ['revision'] };
 
-async function mockNative(page: Page, options: { snapshot: Snapshot; draft: DraftBackup | null; legacy?: string; failBackups?: boolean; delayRecovery?: boolean; failClearOnce?: boolean }) {
+async function mockNative(page: Page, options: { snapshot: Snapshot; draft: DraftBackup | null; legacy?: string; failBackups?: boolean; delayRecovery?: boolean; failClearOnce?: boolean; removeModernAPIs?: boolean }) {
   await page.addInitScript(config => {
-    let snapshot = structuredClone(config.snapshot);
-    let draft = structuredClone(config.draft);
+    const clone = structuredClone;
+    let snapshot = clone(config.snapshot);
+    let draft = clone(config.draft);
     let failures = config.failBackups === true;
     let saves = 0;
     let clears = 0;
@@ -26,12 +27,14 @@ async function mockNative(page: Page, options: { snapshot: Snapshot; draft: Draf
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
       transformCallback: () => 1,
       invoke: (command: string, args: unknown): unknown => {
-        if (command === 'bootstrap' || command === 'get_snapshot' || command === 'sync_now') return structuredClone(snapshot);
+        if (command === 'bootstrap' || command === 'get_snapshot' || command === 'sync_now') return clone(snapshot);
+        if (command === 'get_pending_shares') return [];
+        if (command === 'get_settings') return { theme: 'system' };
         if (command === 'get_draft') {
           if (config.delayRecovery === true) return new Promise<unknown>(resolve => {
-            window.addEventListener('release-test-recovery', () => resolve(structuredClone(draft)), { once: true });
+            window.addEventListener('release-test-recovery', () => resolve(clone(draft)), { once: true });
           });
-          return structuredClone(draft);
+          return clone(draft);
         }
         if (command === 'plugin:lan|is_mobile') return false;
         if (command === 'plugin:event|listen') return 1;
@@ -52,7 +55,7 @@ async function mockNative(page: Page, options: { snapshot: Snapshot; draft: Draf
           draft = null;
           return null;
         }
-        if (command === 'delete_note') { snapshot.notes = []; draft = null; return structuredClone(snapshot); }
+        if (command === 'delete_note') { snapshot.notes = []; draft = null; return clone(snapshot); }
         if (command === 'update_note') {
           updates++;
           if (typeof args !== 'object' || args === null || !('id' in args) || !('title' in args) || !('body' in args)) throw new Error('Invalid edit');
@@ -61,11 +64,15 @@ async function mockNative(page: Page, options: { snapshot: Snapshot; draft: Draf
           note.title = args.title;
           note.body = args.body;
           snapshot = { ...snapshot, heads: ['saved-revision'] };
-          return structuredClone(snapshot);
+          return clone(snapshot);
         }
         return null;
       },
     } });
+    if (config.removeModernAPIs === true) {
+      Object.defineProperty(crypto, 'randomUUID', { value: undefined });
+      Object.defineProperty(window, 'structuredClone', { value: undefined });
+    }
   }, options);
 }
 
@@ -124,6 +131,10 @@ test('editing stays gated until delayed SQLite recovery completes', async ({ pag
   await mockNative(page, { snapshot: initial, draft: backup, delayRecovery: true });
   await page.goto('/');
   await expect(page.locator('#app')).toHaveJSProperty('inert', true);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#app')).toHaveJSProperty('inert', true);
+  await page.locator('[data-note]').click({ force: true });
+  await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveCount(0);
   await page.evaluate(() => window.dispatchEvent(new Event('release-test-recovery')));
   await expect(page.locator('#app')).toHaveJSProperty('inert', false);
   await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Recovered typing');
@@ -152,4 +163,15 @@ test('explicit deletion remains available after a failed recovery write', async 
   await page.getByRole('button', { name: 'Delete note', exact: true }).click();
   await expect(page.locator('[data-note]')).toHaveCount(0);
   expect((await state(page))['draft']).toBeNull();
+});
+
+
+test('native startup and editing work without newer preview-only browser APIs', async ({ page }) => {
+  await mockNative(page, { snapshot: initial, draft: null, removeModernAPIs: true });
+  await page.goto('/');
+  await expect(page.locator('[data-note]')).toHaveCount(1);
+  await page.locator('[data-note]').click();
+  await page.getByLabel('Note text').fill('Compatible native editing');
+  await expect(page.locator('#save-state')).toContainText('Saved on device');
+  expect(parseSnapshot((await state(page))['snapshot']).notes[0]?.body).toBe('Compatible native editing');
 });

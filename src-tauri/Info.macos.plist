@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Murmur uses your camera to scan a network invitation QR code. Images stay on this device.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Murmur connects to your nearby devices to share notes and files directly on your local network.</string>
+    <key>NSBonjourServices</key>
+    <array><string>_murmur._tcp</string></array>
+</dict>
+</plist>

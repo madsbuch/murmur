@@ -34,8 +34,8 @@ test('preview editing, sharing, switching and restoring in the current session',
   await page.getByRole('button', { name: 'Notes', exact: true }).click();
   await page.getByRole('button', { name: 'Kitchen table', exact: true }).click();
   await expect(page.getByRole('img', { name: 'QR invitation for Kitchen table' })).toBeVisible();
-  await expect(page.getByText('This code contains your shared secret.', { exact: false })).toBeVisible();
-  await page.getByRole('button', { name: 'Copy invitation', exact: true }).click();
+  await expect(page.getByText('Anyone with this phrase or QR code can access this network.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Copy phrase', exact: true }).click();
   const invite = await page.evaluate(() => navigator.clipboard.readText());
   await page.getByRole('button', { name: 'Close dialog' }).click();
   await page.getByRole('button', { name: 'Manage network' }).click();
@@ -45,7 +45,7 @@ test('preview editing, sharing, switching and restoring in the current session',
   await expect(page.locator('[data-note]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Manage network' }).click();
   await page.getByRole('button', { name: 'Join another network' }).click();
-  await page.getByLabel('Network invitation').fill(invite);
+  await page.getByLabel('Invitation phrase').fill(invite);
   await page.getByRole('button', { name: 'Join network', exact: true }).click();
   await page.locator('[data-note]').filter({ hasText: 'Weekend plans' }).click();
   await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Bring tea and a notebook. 🍵');
@@ -57,7 +57,7 @@ test('preview editing, sharing, switching and restoring in the current session',
 test('reject an invalid invitation and retain a usable join form', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Join a network', exact: true }).click();
-  await page.getByLabel('Network invitation').fill('https://unrelated.example');
+  await page.getByLabel('Invitation phrase').fill('https://unrelated.example');
   await page.getByRole('button', { name: 'Join network', exact: true }).click();
   await expect(page.locator('#toast')).toContainText('not a Murmur invitation');
   await expect(page.getByRole('dialog', { name: 'Join a network' })).toBeVisible();
@@ -114,7 +114,7 @@ for (const viewport of [{ width: 768, height: 1024 }, { width: 1024, height: 768
 
 test('browser preview clears on reload and does not write durable notebook storage', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByText('Temporary demo; reload clears these notes.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Temporary demo; reload clears these notes,', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Create a network', exact: true }).click();
   await page.getByLabel('Network name').fill('Temporary');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();

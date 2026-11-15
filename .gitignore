@@ -33,3 +33,6 @@ __pycache__/
 *.pyc
 murmur.sqlite3*
 legacy-json-backup/
+src-tauri/apple-share/.build/
+src-tauri/apple-share/build/
+src-tauri/apple-share/macOS/MurmurShare.xcodeproj/
