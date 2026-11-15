@@ -792,6 +792,7 @@ function openModal(content: string, label: string) {
   tagEditor = null;
   tagFilterDialog = null;
   modalGeneration++;
+  const generation = modalGeneration;
   filePreviewCleanup?.();
   filePreviewCleanup = null;
   activeFilePreview = null;
@@ -799,6 +800,8 @@ function openModal(content: string, label: string) {
   modalRoot.innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-label="${esc(label)}"><button class="icon-button modal-close" data-action="close-modal" aria-label="Close dialog">${icon('close')}</button>${content}</section></div>`;
   app.inert = true;
   setTimeout(() => {
+    // Initial focus must not override user input or a replacement dialog.
+    if (generation !== modalGeneration || modalRoot.contains(document.activeElement)) return;
     const field = tagFilterDialog === null
       ? modalRoot.querySelector('[autofocus], input:not(:disabled), textarea:not(:disabled), [tabindex="0"], button:not(.modal-close):not(:disabled)')
       : modalRoot.querySelector('.tag-filter-choice') ?? modalRoot.querySelector('.tag-filter-close');

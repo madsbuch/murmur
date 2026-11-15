@@ -315,6 +315,24 @@ test('the tag picker anchors to its filter, keeps multiple choices open, and dis
   await expect(page.locator('[data-note]')).toHaveCount(2);
 });
 
+test('delayed picker autofocus cannot replace a tag the user already focused', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-15T12:00:00Z') });
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await createNetwork(page);
+  await createNote(page, 'Keyboard selection', 'Keep the selected tag.', ['outside', 'ready', 'studio']);
+  await page.clock.pauseAt(new Date('2026-11-15T13:00:00Z'));
+  await page.getByRole('button', { name: 'Filter notes by tag', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Filter notes by tag', exact: true });
+  const ready = picker.getByRole('checkbox', { name: 'ready', exact: true });
+  await ready.focus();
+  // Run the opening timer after the user has deliberately moved to another tag.
+  await page.clock.runFor(100);
+  await expect(ready).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(ready).toBeChecked();
+  await expect(picker.getByRole('checkbox', { name: 'outside', exact: true })).not.toBeChecked();
+});
+
 test('the tag picker stays within a narrow phone and short landscape viewport', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1100, height: 760 });
   await createNetwork(page);
