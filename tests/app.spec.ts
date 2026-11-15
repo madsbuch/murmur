@@ -24,7 +24,7 @@ test('preview editing, sharing, switching and restoring in the current session',
   await page.getByRole('button', { name: 'Create a network', exact: true }).click();
   await page.getByLabel('Network name').fill('Kitchen table');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Kitchen table', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
   await page.getByRole('button', { name: 'New note', exact: true }).filter({ visible: true }).first().click();
   await page.getByRole('textbox', { name: 'Note title' }).fill('Weekend plans');
   await page.getByRole('textbox', { name: 'Note text' }).fill('Bring tea and a notebook. 🍵');
@@ -32,7 +32,10 @@ test('preview editing, sharing, switching and restoring in the current session',
 
   await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Bring tea and a notebook. 🍵');
   await page.getByRole('button', { name: 'Notes', exact: true }).click();
-  await page.getByRole('button', { name: 'Kitchen table', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.network-name')).toHaveText('Kitchen table');
+  await page.getByRole('button', { name: 'Manage network', exact: true }).click();
+  await page.getByRole('button', { name: 'Invite a device', exact: true }).click();
   await expect(page.getByRole('img', { name: 'QR invitation for Kitchen table' })).toBeVisible();
   await expect(page.getByText('Anyone with this phrase or QR code can access this network.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Copy phrase', exact: true }).click();
@@ -43,6 +46,7 @@ test('preview editing, sharing, switching and restoring in the current session',
   await page.getByLabel('Network name').fill('Another circle');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();
   await expect(page.locator('[data-note]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Manage network' }).click();
   await page.getByRole('button', { name: 'Join another network' }).click();
   await page.getByLabel('Invitation phrase').fill(invite);
@@ -72,7 +76,9 @@ test('network dialog stays within the visual viewport above a keyboard', async (
   expect(dialog.y + dialog.height).toBeLessThanOrEqual(360);
   await page.getByLabel('Network name').fill('Keyboard check');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Keyboard check', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.network-name')).toHaveText('Keyboard check');
 });
 
 for (const viewport of [{ width: 768, height: 1024 }, { width: 1024, height: 768 }, { width: 1366, height: 1024 }, { width: 600, height: 960 }, { width: 320, height: 568 }]) {

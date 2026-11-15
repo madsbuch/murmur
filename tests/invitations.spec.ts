@@ -60,7 +60,9 @@ test('sharing exposes a numbered phrase without a raw ID and joining restores th
   await page.getByRole('button', { name: 'Create a network', exact: true }).click();
   await page.getByLabel('Network name').fill('My word network');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();
-  await page.getByRole('button', { name: 'My word network', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Manage network', exact: true }).click();
+  await page.getByRole('button', { name: 'Invite a device', exact: true }).click();
   await expect(page.locator('.phrase-grid li')).toHaveCount(24);
   await expect(page.locator('.network-id')).toHaveCount(0);
   await expect(page.getByRole('dialog')).not.toContainText('NETWORK ID');
@@ -74,9 +76,11 @@ test('sharing exposes a numbered phrase without a raw ID and joining restores th
   await page.getByRole('button', { name: 'Create another network', exact: true }).click();
   await page.getByLabel('Network name').fill('Another network');
   await page.getByRole('button', { name: 'Create network', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Manage network', exact: true }).click();
   await page.getByRole('button', { name: 'Join another network', exact: true }).click();
   await page.getByLabel('Invitation phrase').fill(phrase.split(' ').map(word => word.slice(0, 4).toUpperCase()).join('-'));
   await page.getByRole('button', { name: 'Join network', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'My word network', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.network-name')).toHaveText('My word network');
 });

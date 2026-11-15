@@ -1,4 +1,5 @@
 //! File metadata is a CRDT; immutable bytes live separately in SQLite.
+use crate::tags;
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +22,7 @@ pub struct SharedFile {
     pub sha256: String,
     pub created_at: u64,
     pub available: bool,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,6 +50,7 @@ pub(crate) struct FileRecord {
     pub sha256: String,
     pub created_at: u64,
     pub deleted: bool,
+    pub tags: Vec<String>,
 }
 
 impl FileRecord {
@@ -68,6 +71,7 @@ impl FileRecord {
             sha256: self.sha256.clone(),
             created_at: self.created_at,
             available,
+            tags: self.tags.clone(),
         }
     }
 }
@@ -132,6 +136,9 @@ pub(crate) fn add_file(doc: &mut AutoCommit, file: &FileRecord) -> Result<()> {
     doc.put(&object, "createdAt", file.created_at)
         .map_err(message)?;
     doc.put(&object, "deleted", false).map_err(message)?;
+    for tag in &file.tags {
+        tags::set(doc, &object, tag, true)?;
+    }
     Ok(())
 }
 
@@ -199,6 +206,7 @@ pub(crate) fn read_files(doc: &AutoCommit) -> Result<Vec<FileRecord>> {
             sha256,
             created_at,
             deleted,
+            tags: tags::read(doc, &object)?,
         });
     }
     records.sort_by(|a, b| {
@@ -209,7 +217,7 @@ pub(crate) fn read_files(doc: &AutoCommit) -> Result<Vec<FileRecord>> {
     Ok(records)
 }
 
-fn file_object(doc: &AutoCommit, id: &str) -> Result<ObjId> {
+pub(crate) fn file_object(doc: &AutoCommit, id: &str) -> Result<ObjId> {
     if Uuid::parse_str(id).map_or(true, |parsed| parsed.to_string() != id) {
         return Err("Invalid shared-file ID.".into());
     }

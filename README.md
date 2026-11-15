@@ -72,7 +72,7 @@ For the iOS share extension, register App Group `group.app.murmur.notes` with yo
 
 1. Install Murmur on both devices (phones, tablets, or Macs). Connect them to the same Wi-Fi network.
 2. On the first device, select **Create a network** and enter a name.
-3. Tap the network name or **Invite a device** to display its QR code.
+3. Open **Settings → Network → Manage network → Invite a device** to display its QR code.
 4. On the other device, select **Join a network → Scan QR code**. Allow camera and local network access when requested. Typing or pasting the invitation phrase also works.
 5. Keep both apps open. Notes synchronize automatically; no manual pairing or IP address entry is needed.
 6. Disconnect one device, edit on both, then reconnect and reopen Murmur. Both devices converge, including concurrent edits within the same note.
@@ -102,6 +102,14 @@ You can also send screenshots, pictures, PDFs, or other files to Murmur from ano
 With an active network, Murmur saves any note being edited, imports the pending batch into that network, and opens **Files**. Recovery, an open dialog, or another operation delays importing. Without an active network, **files ready to add** remains on the start screen until you create or join one. A failed import keeps its queue and offers **Retry import** or **Discard**. Discard removes queued copies only; originals are unchanged.
 
 The incoming inbox holds at most 32 files and 100 MiB, with the same 25 MiB per-file limit. Native handoff queues and the app inbox use SQLite; handoff receipts prevent a repeated delivery from duplicating an accepted batch. Importing the pending app inbox into a network is atomic. A source share extension can still report that only some selected files were saved if a later file fails; check its result before closing it. Files must be provided as readable file/image attachments. Folders, text-only messages, and web-link-only shares are outside this feature's scope. Murmur does not fetch remote attachments itself.
+
+## Tags and note search
+
+Use the tag button in a note's toolbar or **Tags** on a file to add or remove tags. Existing tags are suggested as you type. Labels are normalized to lowercase, can contain spaces, and are limited to 32 characters; each item can have up to 32 tags added locally. Tags persist with the network and synchronize between devices, including for files that are still downloading. Independent tag changes merge without replacing note text or file contents.
+
+Notes and Files each have a tag filter. **Search notes** searches the complete title and body in the current network, ignoring case and accents. Every search word must appear somewhere in the note; the search combines with the selected tag. Clear the filters to show everything again. Searching and filtering do not change the open note or its saved text, and filters reset when switching networks.
+
+Network status, retrying synchronization, invitations, and switching networks are available in **Settings → Network**. The main Notes and Files screens keep these controls out of the content area.
 
 ## How synchronization works
 
@@ -158,6 +166,7 @@ For physical-device acceptance, run the two-phone flow above on Android ↔ iOS,
 - `src/files.ts`, `theme.ts`, and `invitations.ts`: bounded image thumbnails, appearance, and preview word-invitation compatibility.
 - `src/file-preview.ts` and `markdown.ts`: local media/text previews with cleanup, file type detection, and sanitized Markdown rendering for notes and files.
 - `src/clipboard.ts` and `src-tauri/src/clipboard.rs`: image clipboard actions, PNG conversion, and native desktop clipboard integration; Android/iOS use their existing `ShareInboxPlugin` bridges.
+- `src/organization.ts` and `src-tauri/src/tags.rs`: tag normalization/filtering, full-text note matching, and independent synchronized tag presence fields.
 - `native.ts`: discovery lifecycle and peer events.
 - `src-tauri/src/engine.rs`: Automerge document and durable local store.
 - `src-tauri/src/storage.rs`, `schema.rs`, and `migrations/`: Diesel SQLite storage and schema migrations.

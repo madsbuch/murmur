@@ -6,6 +6,7 @@ pub use crate::incoming::PendingShare;
 use crate::incoming::{self, QueuedShare};
 use crate::invitations;
 use crate::storage::{DraftClear, Store, StoredBlob, StoredDraft, StoredNetwork, StoredState};
+use crate::tags::{self, TagKind};
 use automerge::{
     transaction::Transactable, ActorId, AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value,
     ROOT,
@@ -85,6 +86,7 @@ pub struct Note {
     pub title: String,
     pub body: String,
     pub updated_at: u64,
+    pub tags: Vec<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -394,6 +396,7 @@ impl Engine {
                     sha256: hash.clone(),
                     created_at: now(),
                     deleted: false,
+                    tags: vec![],
                 },
             )?;
             ids.push(share.id);
@@ -479,6 +482,7 @@ impl Engine {
             sha256: hash.clone(),
             created_at: now(),
             deleted: false,
+            tags: vec![],
         };
         files::add_file(&mut doc, &file)?;
         validate_document(&doc, &network.id)?;
@@ -554,6 +558,49 @@ impl Engine {
         state.doc = Some(doc);
         self.sync_requested.notify_one();
         self.files_requested.notify_one();
+        self.snapshot_locked(&mut state)
+    }
+
+    pub fn set_tag(
+        &self,
+        network_id: String,
+        kind: TagKind,
+        id: String,
+        tag: String,
+        present: bool,
+    ) -> Result<Snapshot> {
+        validate_id(&id)?;
+        let mut state = self.state()?;
+        ensure_active_network(&state, &network_id)?;
+        let network = state
+            .network
+            .clone()
+            .ok_or("Create or join a network first.")?;
+        let mut doc = state
+            .doc
+            .as_ref()
+            .ok_or("The local document is missing.")?
+            .clone();
+        let object = match kind {
+            TagKind::Note => {
+                let object = note_object(&doc, &id)?;
+                if is_deleted(&doc, &object)? {
+                    return Err("This note was deleted.".into());
+                }
+                object
+            }
+            TagKind::File => {
+                live_file(&doc, &id)?;
+                files::file_object(&doc, &id)?
+            }
+        };
+        if !tags::set(&mut doc, &object, &tag, present)? {
+            return self.snapshot_locked(&mut state);
+        }
+        validate_document(&doc, &network_id)?;
+        save_network(&mut state.store, &network, &mut doc, false, None)?;
+        state.doc = Some(doc);
+        self.sync_requested.notify_one();
         self.snapshot_locked(&mut state)
     }
 
@@ -1026,6 +1073,7 @@ fn read_notes(doc: &AutoCommit) -> Result<Vec<Note>> {
             title,
             body,
             updated_at,
+            tags: tags::read(doc, &object)?,
         });
     }
     notes.sort_by(|a, b| {
@@ -1055,6 +1103,7 @@ fn validate_document(doc: &AutoCommit, network_id: &str) -> Result<()> {
     for id in doc.keys(ROOT).filter(|id| !id.starts_with('_')) {
         validate_id(&id)?;
         let object = note_object(doc, &id)?;
+        tags::read(doc, &object)?;
         if doc
             .text(text_object(doc, &object, "title")?)
             .map_err(err)?
@@ -1358,6 +1407,260 @@ mod tests {
             .accept_document(&packet.network_id, &packet.document)
             .unwrap();
         a.accept_document(&packet.network_id, &response).unwrap();
+    }
+
+    #[test]
+    fn tags_persist_without_changing_file_bytes_or_overwriting_stale_note_edits() {
+        let (directory, _db, a, _b) = pair();
+        let note = a.create_note().unwrap().notes[0].clone();
+        let network_id = active_network_id(&a);
+        let file = a
+            .import_file_bytes(
+                network_id.clone(),
+                "track.wav".into(),
+                "audio/wav".into(),
+                b"audio bytes".to_vec(),
+            )
+            .unwrap()
+            .files[0]
+            .clone();
+        assert!(note.tags.is_empty());
+        assert!(file.tags.is_empty());
+        let before = a.snapshot().unwrap();
+        let tagged = a
+            .set_tag(
+                network_id.clone(),
+                TagKind::Note,
+                note.id.clone(),
+                "  Field   Notes  ".into(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(tagged.notes[0].tags, ["field notes"]);
+        assert_eq!(tagged.notes[0].updated_at, note.updated_at);
+        let tagged = a
+            .set_tag(
+                network_id.clone(),
+                TagKind::File,
+                file.id.clone(),
+                "Music".into(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(tagged.files[0].tags, ["music"]);
+        assert_eq!(tagged.files[0].sha256, file.sha256);
+        assert_eq!(tagged.files[0].created_at, file.created_at);
+        let saved = a
+            .update_note(
+                note.id.clone(),
+                "Markdown session".into(),
+                "# Still editing\n\nA new paragraph.".into(),
+                before.heads,
+            )
+            .unwrap();
+        assert_eq!(saved.notes[0].tags, ["field notes"]);
+        assert_eq!(saved.notes[0].body, "# Still editing\n\nA new paragraph.");
+        assert_eq!(
+            a.read_file_bytes(network_id.clone(), file.id.clone())
+                .unwrap()
+                .2,
+            b"audio bytes"
+        );
+        let heads = saved.heads;
+        let unchanged = a
+            .set_tag(
+                network_id,
+                TagKind::Note,
+                note.id,
+                "FIELD NOTES".into(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(unchanged.heads, heads);
+        drop(a);
+        let reopened = Engine::open(directory.path().into())
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert_eq!(reopened.notes[0].tags, ["field notes"]);
+        assert_eq!(reopened.files[0].tags, ["music"]);
+        assert!(reopened.files[0].available);
+    }
+
+    #[test]
+    fn concurrent_note_and_file_tags_merge_and_deletions_stay_deleted() {
+        let (_da, _db, a, b) = pair();
+        let network_id = active_network_id(&a);
+        let note_id = a.create_note().unwrap().notes[0].id.clone();
+        let file_id = a
+            .import_file_bytes(
+                network_id.clone(),
+                "waiting.txt".into(),
+                "text/plain".into(),
+                b"hello".to_vec(),
+            )
+            .unwrap()
+            .files[0]
+            .id
+            .clone();
+        exchange(&a, &b);
+        assert!(!b.snapshot().unwrap().files[0].available);
+        for (kind, id) in [(TagKind::Note, &note_id), (TagKind::File, &file_id)] {
+            a.set_tag(network_id.clone(), kind, id.clone(), "alpha".into(), true)
+                .unwrap();
+            b.set_tag(network_id.clone(), kind, id.clone(), "beta".into(), true)
+                .unwrap();
+        }
+        exchange(&a, &b);
+        for snapshot in [a.snapshot().unwrap(), b.snapshot().unwrap()] {
+            assert_eq!(snapshot.notes[0].tags, ["alpha", "beta"]);
+            assert_eq!(snapshot.files[0].tags, ["alpha", "beta"]);
+        }
+        for (kind, id) in [(TagKind::Note, &note_id), (TagKind::File, &file_id)] {
+            a.set_tag(network_id.clone(), kind, id.clone(), "alpha".into(), false)
+                .unwrap();
+            b.set_tag(network_id.clone(), kind, id.clone(), "gamma".into(), true)
+                .unwrap();
+        }
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().notes[0].tags, ["beta", "gamma"]);
+        assert_eq!(a.snapshot().unwrap().files[0].tags, ["beta", "gamma"]);
+        a.delete_note(note_id.clone()).unwrap();
+        a.delete_file(network_id.clone(), file_id.clone()).unwrap();
+        b.set_tag(
+            network_id.clone(),
+            TagKind::Note,
+            note_id.clone(),
+            "delta".into(),
+            true,
+        )
+        .unwrap();
+        b.set_tag(
+            network_id.clone(),
+            TagKind::File,
+            file_id.clone(),
+            "delta".into(),
+            true,
+        )
+        .unwrap();
+        exchange(&a, &b);
+        for engine in [&a, &b] {
+            let snapshot = engine.snapshot().unwrap();
+            assert!(snapshot.notes.is_empty());
+            assert!(snapshot.files.is_empty());
+            assert!(engine
+                .set_tag(
+                    network_id.clone(),
+                    TagKind::Note,
+                    note_id.clone(),
+                    "later".into(),
+                    true
+                )
+                .is_err());
+            assert!(engine
+                .set_tag(
+                    network_id.clone(),
+                    TagKind::File,
+                    file_id.clone(),
+                    "later".into(),
+                    true
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn concurrent_additions_at_the_tag_limit_merge_and_remain_removable() {
+        let (_da, _db, a, b) = pair();
+        let network_id = active_network_id(&a);
+        let id = a.create_note().unwrap().notes[0].id.clone();
+        for index in 0..31 {
+            a.set_tag(
+                network_id.clone(),
+                TagKind::Note,
+                id.clone(),
+                format!("tag {index}"),
+                true,
+            )
+            .unwrap();
+        }
+        exchange(&a, &b);
+        a.set_tag(
+            network_id.clone(),
+            TagKind::Note,
+            id.clone(),
+            "local".into(),
+            true,
+        )
+        .unwrap();
+        b.set_tag(
+            network_id.clone(),
+            TagKind::Note,
+            id.clone(),
+            "remote".into(),
+            true,
+        )
+        .unwrap();
+        assert!(a
+            .set_tag(
+                network_id.clone(),
+                TagKind::Note,
+                id.clone(),
+                "too many".into(),
+                true
+            )
+            .is_err());
+        exchange(&a, &b);
+        assert_eq!(a.snapshot().unwrap().notes[0].tags.len(), 33);
+        let removed = a
+            .set_tag(network_id, TagKind::Note, id, "local".into(), false)
+            .unwrap();
+        assert_eq!(removed.notes[0].tags.len(), 32);
+        exchange(&a, &b);
+        assert_eq!(
+            a.snapshot().unwrap().notes[0].tags,
+            b.snapshot().unwrap().notes[0].tags
+        );
+    }
+
+    #[test]
+    fn tags_reject_stale_networks_and_malformed_peer_metadata() {
+        let (_da, _db, a, b) = pair();
+        let network = a.snapshot().unwrap().network.unwrap();
+        let id = a.create_note().unwrap().notes[0].id.clone();
+        exchange(&a, &b);
+        for tag in ["   ".to_owned(), "new\nline".to_owned(), "x".repeat(33)] {
+            assert!(a
+                .set_tag(network.id.clone(), TagKind::Note, id.clone(), tag, true)
+                .is_err());
+        }
+        let packet = a.packet().unwrap().unwrap();
+        for invalid_key in ["_tag:", "_tag:Noncanonical", "_tag:has\ncontrol"] {
+            let mut malformed = AutoCommit::load(&packet.document).unwrap();
+            let object = note_object(&malformed, &id).unwrap();
+            malformed.put(&object, invalid_key, true).unwrap();
+            assert!(b.accept_document(&network.id, &malformed.save()).is_err());
+        }
+        let mut malformed = AutoCommit::load(&packet.document).unwrap();
+        let object = note_object(&malformed, &id).unwrap();
+        malformed
+            .put(&object, "_tag:work", "not a boolean")
+            .unwrap();
+        assert!(b.accept_document(&network.id, &malformed.save()).is_err());
+        assert!(b.snapshot().unwrap().notes[0].tags.is_empty());
+        a.create_network("Other network".into()).unwrap();
+        assert!(a
+            .set_tag(
+                network.id.clone(),
+                TagKind::Note,
+                id.clone(),
+                "private".into(),
+                true
+            )
+            .is_err());
+        assert!(a.join_network(network.invite).unwrap().notes[0]
+            .tags
+            .is_empty());
     }
     #[test]
     fn word_invitation_joins_offline_and_preserves_saved_network_names() {
@@ -2022,6 +2325,7 @@ mod tests {
                     sha256: format!("{index:064x}"),
                     created_at: now(),
                     deleted: false,
+                    tags: vec![],
                 },
             )
             .unwrap();
@@ -2040,6 +2344,7 @@ mod tests {
                     sha256: files::content_hash(&[]),
                     created_at: now(),
                     deleted: false,
+                    tags: vec![],
                 },
             )
             .unwrap();
@@ -2181,6 +2486,7 @@ mod tests {
                 sha256: files::content_hash(&[]),
                 created_at: now(),
                 deleted: false,
+                tags: vec![],
             },
         )
         .unwrap();
@@ -2207,6 +2513,7 @@ mod tests {
                 sha256: hash.clone(),
                 created_at: now(),
                 deleted: false,
+                tags: vec![],
             },
         )
         .unwrap();

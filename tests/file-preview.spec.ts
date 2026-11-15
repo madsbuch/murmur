@@ -143,7 +143,7 @@ test('a dismissed native file read cannot reopen its preview when it finishes', 
   const snapshot: Snapshot = {
     network: { id: 'preview-network', name: 'Native preview', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' },
     notes: [], heads: [], status: { peers: 0, lastSync: null, error: null }, deviceId: 'test-device', listenerPort: 0,
-    files: [{ id: 'slow-track', name: content.name, mimeType: content.mimeType, size: bytes.length, sha256: 'hash', createdAt: 1, available: true }],
+    files: [{ id: 'slow-track', name: content.name, mimeType: content.mimeType, size: bytes.length, sha256: 'hash', createdAt: 1, available: true, tags: [] }],
   };
   await page.addInitScript(config => {
     Object.defineProperty(window, 'isTauri', { value: true });

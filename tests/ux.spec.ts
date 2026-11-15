@@ -143,7 +143,7 @@ for (const viewport of [{ width: 320, height: 568 }, { width: 430, height: 932 }
 
 const nativeSnapshot: Snapshot = {
   network: { id: 'files-network', name: 'Native files', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' }, notes: [], heads: [],
-  files: [{ id: 'pending', name: 'Incoming.pdf', mimeType: 'application/pdf', size: 40, sha256: 'hash', createdAt: 1, available: false }],
+  files: [{ id: 'pending', name: 'Incoming.pdf', mimeType: 'application/pdf', size: 40, sha256: 'hash', createdAt: 1, available: false, tags: [] }],
   status: { peers: 0, lastSync: null, error: null }, deviceId: 'test-device', listenerPort: 0,
 };
 
@@ -171,7 +171,7 @@ test('native IPC validates file data, imports files and updates pending availabi
         if (command === 'import_file') {
           if (typeof args !== 'object' || args === null || !('name' in args) || !('mimeType' in args) || !('dataBase64' in args) || typeof args.name !== 'string' || typeof args.mimeType !== 'string' || typeof args.dataBase64 !== 'string') throw new Error('Invalid file request');
           content = { name: args.name, mimeType: args.mimeType, dataBase64: args.dataBase64 };
-          snapshot.files.push({ id: 'imported', name: args.name, mimeType: args.mimeType, size: atob(args.dataBase64).length, sha256: 'hash', createdAt: 2, available: true });
+          snapshot.files.push({ id: 'imported', name: args.name, mimeType: args.mimeType, size: atob(args.dataBase64).length, sha256: 'hash', createdAt: 2, available: true, tags: [] });
           return structuredClone(snapshot);
         }
         if (command === 'read_file') return structuredClone(content);

@@ -5,7 +5,7 @@ import { parsePendingShares, parseSnapshot, record } from '../src/validation';
 
 const network = { id: 'network', name: 'My devices', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' };
 const initial: Snapshot = {
-  network, notes: [{ id: 'note', title: 'A note', body: 'Saved text', updatedAt: 1 }], files: [], heads: ['head'],
+  network, notes: [{ id: 'note', title: 'A note', body: 'Saved text', updatedAt: 1, tags: [] }], files: [], heads: ['head'],
   status: { peers: 0, lastSync: null, error: null }, deviceId: 'device', listenerPort: 0,
 };
 const incoming: PendingShare[] = [
@@ -54,7 +54,7 @@ async function mockShares(page: Page, options: { noNetwork?: boolean; receiveLat
           if (typeof args !== 'object' || args === null || !('networkId' in args) || args.networkId !== snapshot.network?.id) throw new Error('Wrong destination network');
           if (failImport) throw new Error('Network storage is full');
           const commit = () => {
-            snapshot.files.push(...pending.map(file => ({ ...file, sha256: 'hash', createdAt: 1, available: true })));
+            snapshot.files.push(...pending.map(file => ({ ...file, sha256: 'hash', createdAt: 1, available: true, tags: [] })));
             pending = [];
             return structuredClone(snapshot);
           };
@@ -159,6 +159,7 @@ test('typing during a shared-file import is saved before opening Files', async (
 test('network dialogs defer auto-import until closed', async ({ page }) => {
   await mockShares(page, { receiveLater: true });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Manage network', exact: true }).click();
   await signal(page, 'test-receive-shares');
   await expect(page.locator('#pending-share-status')).toContainText('2 files ready to add');

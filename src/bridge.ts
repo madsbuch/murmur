@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { DraftBackup, FileContent, Network, PendingShare, Settings, Snapshot, Theme } from './types';
 import { parseDraft, parseFileContent, parsePendingShares, parseSettings, parseSnapshot } from './validation';
 import { createPreviewNetwork, parsePreviewInvitation, sameInvitationSecret } from './invitations';
+import { MAX_TAGS_PER_ITEM, normalizeTag } from './organization';
 
 export const native = isTauri();
 
@@ -71,7 +72,7 @@ export const api = {
   },
   createNote: async (): Promise<Snapshot> => {
     if (native) return snapshotCommand('create_note');
-    activeNetwork().notes.unshift({ id: crypto.randomUUID(), title: '', body: '', updatedAt: Date.now() });
+    activeNetwork().notes.unshift({ id: crypto.randomUUID(), title: '', body: '', tags: [], updatedAt: Date.now() });
     return preview();
   },
   updateNote: async (id: string, title: string, body: string, baseHeads: string[]): Promise<Snapshot> => {
@@ -87,6 +88,19 @@ export const api = {
     if (native) return snapshotCommand('delete_note', { id });
     const active = activeNetwork();
     active.notes = active.notes.filter(n => n.id !== id);
+    return preview();
+  },
+  setTag: async (networkId: string, kind: 'note' | 'file', id: string, rawTag: string, present: boolean): Promise<Snapshot> => {
+    const tag = normalizeTag(rawTag);
+    if (native) return snapshotCommand('set_tag', { networkId, kind, id, tag, present });
+    const active = activeNetwork();
+    if (active.network.id !== networkId) throw new Error('The active network changed. Please select the item again.');
+    const item = kind === 'note' ? active.notes.find(note => note.id === id) : active.files.find(file => file.id === id);
+    if (item === undefined) throw new Error('This item no longer exists.');
+    if (present && !item.tags.includes(tag)) {
+      if (item.tags.length >= MAX_TAGS_PER_ITEM) throw new Error('An item can have up to 32 tags. Remove a tag before adding another.');
+      item.tags = [...item.tags, tag].sort();
+    } else if (!present) item.tags = item.tags.filter(existing => existing !== tag);
     return preview();
   },
   sync: async (): Promise<Snapshot> => native ? snapshotCommand('sync_now') : preview(),
@@ -107,7 +121,7 @@ export const api = {
     if (state.active !== networkId) throw new Error('The active network changed. Please choose your files again.');
     const id = crypto.randomUUID();
     active.content.set(id, structuredClone(content));
-    active.files.unshift({ id, name: content.name, mimeType: content.mimeType, size: bytes.length, sha256, createdAt: Date.now(), available: true });
+    active.files.unshift({ id, name: content.name, mimeType: content.mimeType, size: bytes.length, sha256, createdAt: Date.now(), available: true, tags: [] });
     return preview();
   },
   readFile: async (networkId: string, id: string): Promise<FileContent> => {

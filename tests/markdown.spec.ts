@@ -64,7 +64,7 @@ test('Markdown treats HTML as text, blocks active links and never fetches embedd
 async function nativeNote(page: Page, failSave = false) {
   const snapshot: Snapshot = {
     network: { id: 'markdown-network', name: 'Markdown', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' },
-    notes: [{ id: 'note', title: 'Peer note', body: '# Original\n\nA saved note.', updatedAt: 1 }],
+    notes: [{ id: 'note', title: 'Peer note', body: '# Original\n\nA saved note.', updatedAt: 1, tags: [] }],
     files: [], heads: ['original'], status: { peers: 0, lastSync: null, error: null }, deviceId: 'device', listenerPort: 0,
   };
   await page.addInitScript(config => {

@@ -6,7 +6,7 @@ import { parseFileContent, record } from '../src/validation';
 async function nativeClipboard(page: Page, options: { empty?: boolean; rejectRead?: boolean; rejectWrite?: boolean } = {}) {
   const snapshot: Snapshot = {
     network: { id: 'clipboard-network', name: 'Clipboard', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' },
-    notes: [{ id: 'note', title: 'A note', body: 'Keep this text.', updatedAt: 1 }],
+    notes: [{ id: 'note', title: 'A note', body: 'Keep this text.', updatedAt: 1, tags: [] }],
     files: [], heads: [], status: { peers: 0, lastSync: null, error: null }, deviceId: 'device', listenerPort: 0,
   };
   await page.addInitScript(config => {
@@ -22,7 +22,7 @@ async function nativeClipboard(page: Page, options: { empty?: boolean; rejectRea
     const source = { name: 'Existing.png', mimeType: 'image/png', dataBase64 };
     const clipboard = { ...source, name: 'Clipboard.png' };
     const snapshot = structuredClone(config.snapshot);
-    snapshot.files.push({ id: 'existing', name: source.name, mimeType: source.mimeType, size: atob(dataBase64).length, sha256: 'hash', createdAt: 1, available: true });
+    snapshot.files.push({ id: 'existing', name: source.name, mimeType: source.mimeType, size: atob(dataBase64).length, sha256: 'hash', createdAt: 1, available: true, tags: [] });
     const content = new Map<string, FileContent>([['existing', source]]);
     const imports: FileContent[] = [];
     const writes: string[] = [];
@@ -55,7 +55,7 @@ async function nativeClipboard(page: Page, options: { empty?: boolean; rejectRea
           imports.push(file);
           const id = 'imported-' + imports.length.toString();
           content.set(id, file);
-          snapshot.files.push({ id, name: file.name, mimeType: file.mimeType, size: atob(file.dataBase64).length, sha256: 'hash', createdAt: 2, available: true });
+          snapshot.files.push({ id, name: file.name, mimeType: file.mimeType, size: atob(file.dataBase64).length, sha256: 'hash', createdAt: 2, available: true, tags: [] });
           return structuredClone(snapshot);
         }
         if (command === 'read_file') {

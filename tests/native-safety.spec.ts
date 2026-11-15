@@ -5,7 +5,7 @@ import { parseDraft, parseSnapshot, record } from '../src/validation';
 
 const initial: Snapshot = {
   network: { id: 'network', name: 'Native notebook', invite: 'murmur://join#test', phrase: 'abandon '.repeat(23) + 'art' },
-  notes: [{ id: 'note', title: 'Stored title', body: 'Stored text', updatedAt: 1 }],
+  notes: [{ id: 'note', title: 'Stored title', body: 'Stored text', updatedAt: 1, tags: [] }],
   files: [], heads: ['revision'], status: { peers: 0, lastSync: null, error: null },
   deviceId: 'device', listenerPort: 0,
 };
@@ -86,7 +86,7 @@ async function state(page: Page) {
 
 test('runtime validation rejects malformed IPC and recovery data without coercing it', () => {
   expect(() => parseSnapshot({ ...initial, listenerPort: '12' })).toThrow();
-  expect(() => parseSnapshot({ ...initial, notes: [{ id: 'n', title: 17, body: '', updatedAt: 1 }] })).toThrow();
+  expect(() => parseSnapshot({ ...initial, notes: [{ id: 'n', title: 17, body: '', updatedAt: 1, tags: [] }] })).toThrow();
   expect(() => parseSnapshot({ ...initial, status: { peers: Number.NaN, lastSync: null, error: null } })).toThrow();
   expect(() => parseDraft({ ...backup, baseHeads: [false] })).toThrow();
   expect(() => parseDraft({ ...backup, body: null })).toThrow();

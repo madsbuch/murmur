@@ -10,10 +10,12 @@ mod invitations;
 mod native_shares;
 mod schema;
 mod storage;
+mod tags;
 mod transport;
 
 use engine::{DraftBackup, Engine, FileContent, Peer, PendingShare, Settings, Snapshot, Theme};
 use std::sync::Arc;
+use tags::TagKind;
 use tauri::{Manager, State};
 
 type AppState = Arc<Engine>;
@@ -101,6 +103,21 @@ fn update_note(
 #[tauri::command]
 fn delete_note(id: String, state: State<'_, AppState>) -> Result<Snapshot, String> {
     state.delete_note(id)
+}
+
+#[tauri::command]
+async fn set_tag(
+    network_id: String,
+    kind: TagKind,
+    id: String,
+    tag: String,
+    present: bool,
+    state: State<'_, AppState>,
+) -> Result<Snapshot, String> {
+    let engine = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || engine.set_tag(network_id, kind, id, tag, present))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -252,6 +269,7 @@ pub fn run() {
             create_note,
             update_note,
             delete_note,
+            set_tag,
             import_file,
             read_file,
             read_clipboard_image,

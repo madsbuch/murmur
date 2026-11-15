@@ -73,10 +73,11 @@ async function startScanner(page: Page) {
 test('desktop camera decodes a real QR frame and releases the camera after joining', async ({ page }) => {
   await installCamera(page, 'qr');
   await startScanner(page);
-  await expect(page.locator('.network-pill')).toContainText('Camera fixture');
   await expect(page.locator('#desktop-camera')).toHaveCount(0);
   await expect.poll(() => cameraState(page)).toEqual({ calls: 1, tracks: ['ended'] });
   await expect(page.getByRole('button', { name: 'New note', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.network-name')).toHaveText('Camera fixture');
 });
 
 test('desktop camera cancellation and reopening leave no live tracks', async ({ page }) => {

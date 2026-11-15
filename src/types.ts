@@ -2,6 +2,7 @@ export interface Note {
   id: string;
   title: string;
   body: string;
+  tags: string[];
   updatedAt: number;
 }
 
@@ -32,6 +33,7 @@ export interface SharedFile {
   sha256: string;
   createdAt: number;
   available: boolean;
+  tags: string[];
 }
 export interface FileContent { name: string; mimeType: string; dataBase64: string }
 export interface PendingShare { id: string; name: string; mimeType: string; size: number }

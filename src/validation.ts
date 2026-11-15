@@ -1,4 +1,5 @@
 import type { DraftBackup, FileContent, Network, Note, PendingShare, Settings, SharedFile, Snapshot, Theme } from './types';
+import { normalizeTag } from './organization';
 
 export function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Expected an object.');
@@ -33,7 +34,16 @@ function network(value: unknown): Network {
 
 function note(value: unknown): Note {
   const item = record(value);
-  return { id: text(item['id']), title: text(item['title']), body: text(item['body']), updatedAt: integer(item['updatedAt']) };
+  return { id: text(item['id']), title: text(item['title']), body: text(item['body']), tags: parseTags(item['tags']), updatedAt: integer(item['updatedAt']) };
+}
+
+export function parseTags(value: unknown): string[] {
+  // Older native snapshots and saved documents have no tag field yet.
+  if (value === undefined) return [];
+  const tags = strings(value);
+  if (tags.some(tag => normalizeTag(tag) !== tag) || new Set(tags).size !== tags.length) throw new Error('Invalid tags.');
+  // Concurrent additions may legitimately merge into more than the local add limit.
+  return tags;
 }
 
 export function parseTheme(value: unknown): Theme {
@@ -66,7 +76,7 @@ function sharedFile(value: unknown): SharedFile {
   const item = record(value);
   const available = item['available'];
   if (typeof available !== 'boolean') throw new Error('Expected a file availability flag.');
-  return { id: text(item['id']), name: text(item['name']), mimeType: text(item['mimeType']), size: integer(item['size']), sha256: text(item['sha256']), createdAt: integer(item['createdAt']), available };
+  return { id: text(item['id']), name: text(item['name']), mimeType: text(item['mimeType']), size: integer(item['size']), sha256: text(item['sha256']), createdAt: integer(item['createdAt']), available, tags: parseTags(item['tags']) };
 }
 
 export function parseSnapshot(value: unknown): Snapshot {
