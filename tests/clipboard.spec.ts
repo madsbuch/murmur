@@ -165,7 +165,8 @@ test('keyboard image paste imports once; text paste and images outside Files rem
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Notes', exact: true }).click();
   await page.locator('[data-note]').click();
-  await page.getByLabel('Note text').focus();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
+  await expect(page.getByLabel('Note text')).toBeFocused();
   expect(await dispatchPaste(page, false)).toBe(false);
   expect(await dispatchPaste(page, true)).toBe(false);
   await expect(page.getByLabel('Note text')).toHaveValue('Keep this text.');

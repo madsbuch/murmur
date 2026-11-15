@@ -145,6 +145,7 @@ test('typing during a shared-file import is saved before opening Files', async (
   await mockShares(page, { receiveLater: true, delayImport: true });
   await page.goto('/');
   await page.locator('[data-note]').click();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await page.getByLabel('Note text').fill('Before sharing');
   await expect(page.locator('#save-state')).toContainText('Saved on device');
   await signal(page, 'test-receive-shares');

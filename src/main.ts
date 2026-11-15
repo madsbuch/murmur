@@ -63,10 +63,11 @@ let activeFilePreview: { networkId: string; id: string } | null = null;
 let draftWrites: Promise<void> = Promise.resolve();
 let selected: string | null = null;
 let mobileEditor = false;
-let noteMode: 'write' | 'preview' = 'write';
+let noteMode: 'write' | 'preview' = 'preview';
 let noteQuery = '';
-let noteTagFilter = '';
-let fileTagFilter = '';
+let noteTagFilter: string[] = [];
+let fileTagFilter: string[] = [];
+let tagFilterDialog: 'note' | 'file' | null = null;
 let tagEditor: { kind: 'note' | 'file'; id: string; networkId: string } | null = null;
 let actionBusy = false;
 let mutation = 0;
@@ -136,8 +137,8 @@ function render() {
     renderPendingShares();
     return;
   }
-  const notesScreen = `<main class="workspace"><aside class="sidebar"><div class="sidebar-heading"><h1>Notes <span id="note-count">${snapshot.notes.length.toString()}</span></h1><button class="icon-button new-note-small" data-action="new-note" aria-label="New note">${icon('plus')}</button></div><div class="note-filters"><input id="note-search" type="search" aria-label="Search notes" placeholder="Search titles and text" value="${esc(noteQuery)}" autocomplete="off"/><div class="filter-row"><select id="note-tag-filter" aria-label="Filter notes by tag"><option value="">All tags</option></select><button class="icon-button" data-action="clear-note-filters" aria-label="Clear note filters">${icon('close')}</button></div></div><div id="note-list" class="note-list"></div></aside><section class="editor-panel" aria-label="Note editor"><div id="editor"></div></section></main>`;
-  const filesScreen = `<section class="files-screen" aria-label="Shared files"><header class="screen-heading"><div><h1>Shared files <span id="file-count">${snapshot.files.length.toString()}</span></h1></div><div class="files-add-actions"><button class="button secondary" data-action="paste-image" ${fileBusy ? 'disabled' : ''}>${icon('copy')}<span>Paste image</span></button><button class="button primary" data-action="add-files" ${fileBusy ? 'disabled' : ''}>${icon('plus')}<span>${fileBusy ? 'Adding…' : 'Add files'}</span></button></div><input id="file-picker" class="sr-only" type="file" multiple aria-label="Choose files"/></header><p class="files-hint">Audio, video, pictures, documents · Up to 25 MB each</p><div class="file-filters filter-row"><select id="file-tag-filter" aria-label="Filter files by tag"><option value="">All tags</option></select><button class="icon-button" data-action="clear-file-filters" aria-label="Clear file filters">${icon('close')}</button></div><div id="file-grid" class="file-grid screen-scroll"></div></section>`;
+  const notesScreen = `<main class="workspace"><aside class="sidebar"><div class="sidebar-heading"><h1>Notes <span id="note-count">${snapshot.notes.length.toString()}</span></h1><button class="icon-button new-note-small" data-action="new-note" aria-label="New note">${icon('plus')}</button></div><div class="note-filters"><input id="note-search" type="search" aria-label="Search notes" placeholder="Search titles and text" value="${esc(noteQuery)}" autocomplete="off"/><div class="filter-row"><button id="note-tag-filter" class="tag-filter-button" data-action="filter-note-tags" aria-label="Filter notes by tag" aria-describedby="note-tag-selection" aria-haspopup="dialog" aria-expanded="false" aria-controls="tag-filter-picker"><span id="note-tag-selection">All tags</span>${icon('arrow')}</button><button class="icon-button" data-action="clear-note-filters" aria-label="Clear note filters">${icon('close')}</button></div></div><div id="note-list" class="note-list"></div></aside><section class="editor-panel" aria-label="Note editor"><div id="editor"></div></section></main>`;
+  const filesScreen = `<section class="files-screen" aria-label="Shared files"><header class="screen-heading"><h1>Shared files <span id="file-count">${snapshot.files.length.toString()}</span></h1><div class="file-filters filter-row"><button id="file-tag-filter" class="tag-filter-button" data-action="filter-file-tags" aria-label="Filter files by tag" aria-describedby="file-tag-selection" aria-haspopup="dialog" aria-expanded="false" aria-controls="tag-filter-picker"><span id="file-tag-selection">All tags</span>${icon('arrow')}</button><button class="icon-button" data-action="clear-file-filters" aria-label="Clear file filters">${icon('close')}</button></div><div class="files-add-actions"><button class="button secondary" data-action="paste-image" title="Paste image" ${fileBusy ? 'disabled' : ''}>${icon('copy')}<span>Paste image</span></button><button class="button primary" data-action="add-files" title="Add files" ${fileBusy ? 'disabled' : ''}>${icon('plus')}<span>${fileBusy ? 'Adding…' : 'Add files'}</span></button></div><input id="file-picker" class="sr-only" type="file" multiple aria-label="Choose files"/></header><div id="file-grid" class="file-grid screen-scroll"></div></section>`;
   app.innerHTML = `${previewBanner()}<div data-section="${section}" class="notebook-shell ${section === 'notes' && mobileEditor ? 'editor-open' : ''}"><header class="topbar">${brand()}${snapshot.network === null ? '<button class="text-button" data-action="nav-notes">Back</button>' : ''}</header><div id="pending-share-status" class="pending-share-status" hidden></div>${section === 'notes' ? notesScreen : section === 'files' ? filesScreen : renderSettings()}${snapshot.network === null ? '' : navigation()}</div>`;
   filesSignature = '';
   renderPendingShares();
@@ -222,20 +223,89 @@ function tagChips(tags: string[]): string {
 }
 
 function renderTagFilter(kind: 'note' | 'file') {
-  const select = document.querySelector(kind === 'note' ? '#note-tag-filter' : '#file-tag-filter');
-  if (!(select instanceof HTMLSelectElement)) return;
+  const button = document.querySelector(kind === 'note' ? '#note-tag-filter' : '#file-tag-filter');
+  if (!(button instanceof HTMLButtonElement)) return;
   const current = kind === 'note' ? noteTagFilter : fileTagFilter;
-  const tags = availableTags(kind === 'note' ? snapshot.notes : snapshot.files);
-  // Keep a removed/renamed selected tag visible so an empty result is explicit.
-  if (current.length > 0 && !tags.includes(current)) tags.push(current);
-  const signature = JSON.stringify(tags);
-  if (select.dataset['tags'] !== signature) {
-    select.innerHTML = '<option value="">All tags</option>' + tags.map(tag => `<option value="${esc(tag)}">${esc(tag)}</option>`).join('');
-    select.dataset['tags'] = signature;
-  }
-  select.value = current;
+  const label = current.length === 0 ? 'All tags' : current.join(', ');
+  const summary = button.querySelector('span');
+  if (summary !== null) summary.textContent = label;
+  button.title = label;
+  button.classList.toggle('has-selected-tags', current.length > 0);
   const clear = document.querySelector(kind === 'note' ? '[data-action="clear-note-filters"]' : '[data-action="clear-file-filters"]');
   if (clear instanceof HTMLButtonElement) clear.disabled = current.length === 0 && (kind === 'file' || noteQuery.length === 0);
+  if (tagFilterDialog === kind) renderTagFilterChoices();
+}
+
+function renderTagFilterChoices() {
+  const kind = tagFilterDialog;
+  const list = modalRoot.querySelector('#tag-filter-choices');
+  if (kind === null || !(list instanceof HTMLElement)) return;
+  const current = kind === 'note' ? noteTagFilter : fileTagFilter;
+  const tags = availableTags(kind === 'note' ? snapshot.notes : snapshot.files);
+  // Keep selected tags visible after peers remove them so they can be cleared.
+  for (const tag of current) if (!tags.includes(tag)) tags.push(tag);
+  const signature = JSON.stringify(tags);
+  if (list.dataset['tags'] !== signature) {
+    const focused = document.activeElement;
+    const focusedTag = focused instanceof HTMLButtonElement && list.contains(focused) ? focused.value : null;
+    list.innerHTML = tags.length === 0 ? '<p class="tag-filter-empty">No tags</p>' : tags.map(tag => `<button type="button" class="tag-filter-choice" role="checkbox" aria-checked="${current.includes(tag) ? 'true' : 'false'}" data-filter-tag="${kind}" value="${esc(tag)}">${icon('tag')}<span>${esc(tag)}</span><span class="tag-filter-check">${icon('check')}</span></button>`).join('');
+    list.dataset['tags'] = signature;
+    if (focusedTag !== null) {
+      const replacement = [...list.querySelectorAll('button')].find(button => button.value === focusedTag);
+      const fallback = modalRoot.querySelector('.tag-filter-close');
+      if (replacement !== undefined) replacement.focus();
+      else if (fallback instanceof HTMLElement) fallback.focus();
+    }
+  }
+  for (const choice of list.querySelectorAll('button')) choice.setAttribute('aria-checked', current.includes(choice.value) ? 'true' : 'false');
+  const clear = modalRoot.querySelector('[data-action="clear-selected-tags"]');
+  if (clear instanceof HTMLButtonElement) clear.disabled = current.length === 0;
+  positionTagFilter();
+}
+
+function positionTagFilter() {
+  if (tagFilterDialog === null) return;
+  const trigger = document.querySelector(tagFilterDialog === 'note' ? '#note-tag-filter' : '#file-tag-filter');
+  const picker = modalRoot.querySelector('.tag-filter-popover');
+  if (!(trigger instanceof HTMLElement) || !(picker instanceof HTMLElement)) return;
+  const anchor = trigger.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const leftEdge = (viewport?.offsetLeft ?? 0) + 12;
+  const topEdge = (viewport?.offsetTop ?? 0) + 12;
+  const rightEdge = leftEdge + (viewport?.width ?? innerWidth) - 24;
+  const bottomEdge = topEdge + Math.min(viewport?.height ?? innerHeight, innerHeight) - 24;
+  const width = Math.min(Math.max(anchor.width, 240), 320, rightEdge - leftEdge);
+  const below = bottomEdge - anchor.bottom - 6;
+  const above = anchor.top - topEdge - 6;
+  const opensAbove = below < 200 && above > below;
+  const useViewport = Math.max(above, below) < 120;
+  picker.style.width = width.toString() + 'px';
+  picker.style.left = Math.max(leftEdge, Math.min(anchor.left, rightEdge - width)).toString() + 'px';
+  picker.style.maxHeight = Math.max(44, Math.min(360, useViewport ? bottomEdge - topEdge : opensAbove ? above : below)).toString() + 'px';
+  const height = picker.getBoundingClientRect().height;
+  picker.style.top = (useViewport ? topEdge : Math.max(topEdge, Math.min(opensAbove ? anchor.top - height - 6 : anchor.bottom + 6, bottomEdge - height))).toString() + 'px';
+}
+
+function openTagFilter(kind: 'note' | 'file') {
+  if (tagFilterDialog === kind) { closeModal(); return; }
+  const trigger = document.querySelector(kind === 'note' ? '#note-tag-filter' : '#file-tag-filter');
+  openModal('<header class="tag-filter-heading"><h2>Tags</h2><button class="text-button" data-action="clear-selected-tags">Clear tags</button><button class="icon-button tag-filter-close" data-action="close-modal" aria-label="Close dialog">' + icon('close') + '</button></header><div id="tag-filter-choices" class="tag-filter-choices"></div>', kind === 'note' ? 'Filter notes by tag' : 'Filter files by tag');
+  tagFilterDialog = kind;
+  const layer = modalRoot.firstElementChild;
+  const picker = modalRoot.querySelector('.modal');
+  if (layer instanceof HTMLElement) layer.className = 'tag-filter-layer';
+  if (picker instanceof HTMLElement) {
+    picker.className = 'tag-filter-popover';
+    picker.id = 'tag-filter-picker';
+    picker.setAttribute('aria-modal', 'false');
+    picker.querySelector('.modal-close')?.remove();
+  }
+  app.inert = recoveryPending;
+  if (trigger instanceof HTMLElement) {
+    modalPreviousFocus = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+  renderTagFilterChoices();
 }
 
 function renderNoteTags() {
@@ -272,9 +342,28 @@ function renderTagEditor() {
       if (field instanceof HTMLInputElement) field.focus();
     }
   }
+  renderTagSuggestions();
+}
+
+function renderTagSuggestions() {
+  const tags = editingTags();
   const suggestions = modalRoot.querySelector('#tag-suggestions');
-  const options = availableTags([...snapshot.notes, ...snapshot.files]).filter(tag => !tags.includes(tag)).map(tag => `<option value="${esc(tag)}"></option>`).join('');
-  if (suggestions !== null && suggestions.innerHTML !== options) suggestions.innerHTML = options;
+  const field = modalRoot.querySelector('#tag-name');
+  if (tags === undefined || !(suggestions instanceof HTMLElement) || !(field instanceof HTMLInputElement)) return;
+  const query = field.value.trim().toLowerCase();
+  const options = availableTags([...snapshot.notes, ...snapshot.files]).filter(tag => !tags.includes(tag) && tag.toLowerCase().includes(query));
+  const markup = options.map(tag => `<button type="button" class="tag-chip tag-suggestion" data-add-tag="${esc(tag)}" aria-label="${esc('Add tag ' + tag)}">${icon('plus')}<span>${esc(tag)}</span></button>`).join('');
+  if (suggestions.innerHTML !== markup) {
+    const focused = document.activeElement;
+    const focusedTag = focused instanceof HTMLButtonElement && suggestions.contains(focused) ? focused.getAttribute('data-add-tag') : null;
+    suggestions.innerHTML = markup;
+    if (focusedTag !== null) {
+      const replacement = [...suggestions.querySelectorAll('button')].find(button => button.getAttribute('data-add-tag') === focusedTag);
+      if (replacement !== undefined) replacement.focus();
+      else field.focus();
+    }
+  }
+  suggestions.hidden = options.length === 0;
 }
 
 async function editTags(kind: 'note' | 'file', id: string) {
@@ -283,7 +372,7 @@ async function editTags(kind: 'note' | 'file', id: string) {
   const entry = kind === 'note' ? snapshot.notes.find(note => note.id === id) : snapshot.files.find(file => file.id === id);
   if (networkId === undefined || entry === undefined) return;
   const name = 'title' in entry ? noteTitle(entry) : entry.name;
-  openModal(`<h2>Tags</h2><p class="modal-copy">${esc(name)}</p><div id="editing-tags" class="editing-tags"></div><form id="tag-form"><label for="tag-name">Tag name</label><input id="tag-name" name="tag" placeholder="e.g. music" list="tag-suggestions" autocomplete="off" required autofocus/><datalist id="tag-suggestions"></datalist><button class="button primary full-width" type="submit">${icon('plus')} Add tag</button></form><p class="modal-fine tag-hint">Up to 32 characters per tag. Tags sync with your devices.</p>`, 'Edit tags');
+  openModal(`<h2>Tags</h2><p class="modal-copy">${esc(name)}</p><div id="editing-tags" class="editing-tags"></div><form id="tag-form"><label for="tag-name">Tag name</label><input id="tag-name" name="tag" placeholder="e.g. music" autocomplete="off" required autofocus/><div id="tag-suggestions" class="tag-suggestions" role="group" aria-label="Suggested tags" hidden></div><button class="button primary full-width" type="submit">${icon('plus')} Add tag</button></form>`, 'Edit tags');
   tagEditor = { kind, id, networkId };
   renderTagEditor();
 }
@@ -313,6 +402,7 @@ async function changeTag(raw: string, present: boolean) {
     renderTagEditor();
     const field = modalRoot.querySelector('#tag-name');
     if (field instanceof HTMLInputElement) { if (present) field.value = ''; field.focus(); }
+    renderTagSuggestions();
   }
 }
 
@@ -356,7 +446,7 @@ function renderFiles() {
   if (signature === filesSignature) return;
   filesSignature = signature;
   const count = document.querySelector('#file-count');
-  const visibleFiles = filterFiles(snapshot.files, fileTagFilter.length === 0 ? [] : [fileTagFilter]);
+  const visibleFiles = filterFiles(snapshot.files, fileTagFilter);
   if (count !== null) count.textContent = visibleFiles.length === snapshot.files.length ? snapshot.files.length.toString() : visibleFiles.length.toString() + '/' + snapshot.files.length.toString();
   for (const [id, url] of imageUrls) {
     if (!snapshot.files.some(file => file.id === id)) { URL.revokeObjectURL(url); imageUrls.delete(id); }
@@ -480,7 +570,7 @@ function renderList() {
   if (list === null) return;
   const count = document.querySelector('#note-count');
   const currentNotes = snapshot.notes.map(note => note.id === draft?.id ? { ...note, title: draft.title, body: draft.body } : note);
-  const notes = filterNotes(currentNotes, noteQuery, noteTagFilter.length === 0 ? [] : [noteTagFilter]).sort((a, b) => b.updatedAt - a.updatedAt);
+  const notes = filterNotes(currentNotes, noteQuery, noteTagFilter).sort((a, b) => b.updatedAt - a.updatedAt);
   if (count !== null) count.textContent = notes.length === snapshot.notes.length ? snapshot.notes.length.toString() : notes.length.toString() + '/' + snapshot.notes.length.toString();
   list.innerHTML = notes.length > 0 ? notes.map(note => {
     const value = draft?.id === note.id ? draft : note;
@@ -495,7 +585,8 @@ function renderEditor() {
     editor.innerHTML = `<div class="editor-empty"><div class="empty-mark">${icon('note')}</div><h2>No note selected</h2><button class="button secondary" data-action="new-note">${icon('plus')} Create note</button></div>`;
     return;
   }
-  editor.innerHTML = `<div class="editor-toolbar"><button class="text-button back-notes" data-action="back">${icon('back')} Notes</button><span class="editor-label">${icon('note')} Note</span><div class="editor-tools">${snapshot.notes.some(note => note.id === draft?.id) ? '' : '<button class="text-button" data-action="copy-recovered">Copy recovered text</button>'}<button id="save-state" class="save-state" aria-live="polite" type="button"></button><button class="icon-button edit-note-tags" data-action="edit-note-tags" aria-label="Edit note tags">${icon('tag')}</button><button class="icon-button delete-note" data-action="delete-note" aria-label="Delete this note">${icon('trash')}</button></div></div><div class="writing-area"><div class="note-heading"><input id="note-title" class="note-title" aria-label="Note title" placeholder="Untitled note" maxlength="256" autocomplete="off" value="${esc(draft.title)}"/><div class="note-mode-switch" role="group" aria-label="Note view"><button class="note-mode-button" data-action="note-write" data-note-mode="write" aria-pressed="${noteMode === 'write' ? 'true' : 'false'}">Write</button><button class="note-mode-button" data-action="note-preview" data-note-mode="preview" aria-pressed="${noteMode === 'preview' ? 'true' : 'false'}">Preview</button></div></div><div id="note-tag-summary" class="note-tag-summary"></div><textarea id="note-body" class="note-body" aria-label="Note text" placeholder="Start writing… Markdown supported" spellcheck="true" ${noteMode === 'write' ? '' : 'hidden'}>${esc(draft.body)}</textarea><div id="note-markdown-preview" class="note-markdown-preview markdown-content" role="region" aria-label="Markdown preview" tabindex="0" ${noteMode === 'preview' ? '' : 'hidden'}></div></div><div class="editor-bottom"><span id="word-count"></span></div>`;
+  noteMode = 'preview';
+  editor.innerHTML = `<div class="editor-toolbar"><button class="text-button back-notes" data-action="back">${icon('back')} Notes</button><span class="editor-label">${icon('note')} Note</span><div class="editor-tools">${snapshot.notes.some(note => note.id === draft?.id) ? '' : '<button class="text-button" data-action="copy-recovered">Copy recovered text</button>'}<button id="save-state" class="save-state" aria-live="polite" type="button"></button><button class="icon-button edit-note-tags" data-action="edit-note-tags" aria-label="Edit note tags">${icon('tag')}</button><button class="icon-button delete-note" data-action="delete-note" aria-label="Delete this note">${icon('trash')}</button></div></div><div class="writing-area"><div class="note-heading"><input id="note-title" class="note-title" aria-label="Note title" placeholder="Untitled note" maxlength="256" autocomplete="off" value="${esc(draft.title)}"/></div><div id="note-tag-summary" class="note-tag-summary"></div><textarea id="note-body" class="note-body" aria-label="Note text" spellcheck="true" hidden>${esc(draft.body)}</textarea><div id="note-markdown-preview" class="note-markdown-preview markdown-content" role="region" aria-label="Markdown preview" tabindex="0"></div></div><div class="editor-bottom"><span id="word-count"></span></div>`;
   renderSaveState();
   renderNoteTags();
   updateWordCount();
@@ -529,7 +620,7 @@ function renderNotePreview() {
   // Polling must preserve scroll position and selections when content is unchanged.
   if (preview.dataset['source'] === draft.body) return;
   preview.dataset['source'] = draft.body;
-  preview.innerHTML = draft.body.trim().length === 0 ? '<p class="markdown-empty">Nothing to preview yet. Choose Write to start a note.</p>' : renderMarkdown(draft.body);
+  preview.innerHTML = renderMarkdown(draft.body);
 }
 
 function setNoteMode(mode: 'write' | 'preview') {
@@ -538,7 +629,6 @@ function setNoteMode(mode: 'write' | 'preview') {
   const preview = document.querySelector('#note-markdown-preview');
   if (body instanceof HTMLElement) body.hidden = mode !== 'write';
   if (preview instanceof HTMLElement) preview.hidden = mode !== 'preview';
-  for (const button of document.querySelectorAll('[data-note-mode]')) button.setAttribute('aria-pressed', button.getAttribute('data-note-mode') === mode ? 'true' : 'false');
   renderNotePreview();
 }
 
@@ -684,7 +774,6 @@ async function selectNote(id: string) {
   const note = snapshot.notes.find(n => n.id === id);
   if (note === undefined) return;
   selected = id;
-  noteMode = 'write';
   draft = { ...note, baseHeads: snapshot.heads, version: 0, dirty: false };
   mobileEditor = true;
   render();
@@ -701,6 +790,7 @@ async function perform(action: () => Promise<void>) {
 
 function openModal(content: string, label: string) {
   tagEditor = null;
+  tagFilterDialog = null;
   modalGeneration++;
   filePreviewCleanup?.();
   filePreviewCleanup = null;
@@ -709,12 +799,16 @@ function openModal(content: string, label: string) {
   modalRoot.innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-label="${esc(label)}"><button class="icon-button modal-close" data-action="close-modal" aria-label="Close dialog">${icon('close')}</button>${content}</section></div>`;
   app.inert = true;
   setTimeout(() => {
-    const field = modalRoot.querySelector('[autofocus], input:not(:disabled), textarea:not(:disabled), [tabindex="0"], button:not(.modal-close):not(:disabled)');
+    const field = tagFilterDialog === null
+      ? modalRoot.querySelector('[autofocus], input:not(:disabled), textarea:not(:disabled), [tabindex="0"], button:not(.modal-close):not(:disabled)')
+      : modalRoot.querySelector('.tag-filter-choice') ?? modalRoot.querySelector('.tag-filter-close');
     if (field instanceof HTMLElement) field.focus();
   }, 30);
 }
 
-function closeModal() {
+function closeModal(restoreFocus = true) {
+  if (tagFilterDialog !== null) document.querySelector(tagFilterDialog === 'note' ? '#note-tag-filter' : '#file-tag-filter')?.setAttribute('aria-expanded', 'false');
+  tagFilterDialog = null;
   const closingTagEditor = tagEditor;
   tagEditor = null;
   modalGeneration++;
@@ -724,8 +818,8 @@ function closeModal() {
   if (modalRoot.firstElementChild === null) return;
   modalRoot.innerHTML = '';
   app.inert = recoveryPending;
-  if (modalPreviousFocus?.isConnected === true) modalPreviousFocus.focus();
-  else if (closingTagEditor !== null) {
+  if (restoreFocus && modalPreviousFocus?.isConnected === true) modalPreviousFocus.focus();
+  else if (restoreFocus && closingTagEditor !== null) {
     const target = closingTagEditor.kind === 'file'
       ? [...document.querySelectorAll('[data-edit-file-tags]')].find(element => element.getAttribute('data-edit-file-tags') === closingTagEditor.id) ?? document.querySelector('#file-tag-filter')
       : document.querySelector('[data-action="edit-note-tags"]') ?? document.querySelector('#note-search');
@@ -756,8 +850,8 @@ async function establishNetwork(next: Snapshot) {
   resetImages();
   snapshot = next;
   noteQuery = '';
-  noteTagFilter = '';
-  fileTagFilter = '';
+  noteTagFilter = [];
+  fileTagFilter = [];
   section = 'notes';
   selected = null;
   draft = null;
@@ -843,13 +937,19 @@ async function scanInvitation() {
 
 async function handleAction(action: string) {
   switch (action) {
+    case 'filter-note-tags': openTagFilter('note'); break;
+    case 'filter-file-tags': openTagFilter('file'); break;
+    case 'clear-selected-tags':
+      if (tagFilterDialog === 'note') { noteTagFilter = []; renderList(); }
+      else if (tagFilterDialog === 'file') { fileTagFilter = []; renderFiles(); }
+      break;
     case 'edit-note-tags': if (draft !== null) await editTags('note', draft.id); break;
     case 'clear-note-filters':
-      noteQuery = ''; noteTagFilter = '';
+      noteQuery = ''; noteTagFilter = [];
       { const field = document.querySelector('#note-search'); if (field instanceof HTMLInputElement) field.value = ''; }
       renderList();
       break;
-    case 'clear-file-filters': fileTagFilter = ''; renderFiles(); break;
+    case 'clear-file-filters': fileTagFilter = []; renderFiles(); break;
     case 'paste-image': {
       const networkId = snapshot.network?.id;
       if (networkId === undefined || fileBusy || section !== 'files') return;
@@ -858,8 +958,6 @@ async function handleAction(action: string) {
       await importFiles(networkId, [file]);
       break;
     }
-    case 'note-write': setNoteMode('write'); break;
-    case 'note-preview': setNoteMode('preview'); break;
     case 'import-shares': requestIncomingCheck(true); break;
     case 'discard-shares':
       openModal('<h2>Discard shared files?</h2><p class="modal-copy">Removes queued copies from Murmur. Original files are unchanged.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Keep files</button><button class="button danger" data-action="confirm-discard-shares">Discard files</button></div>', 'Discard shared files');
@@ -947,7 +1045,7 @@ async function handleAction(action: string) {
         notify('Recovered text copied. You can paste it into a new note.');
       } catch {
         const field = document.querySelector('#note-body');
-        if (field instanceof HTMLTextAreaElement) { field.focus(); field.select(); }
+        if (field instanceof HTMLTextAreaElement) { setNoteMode('write'); field.focus(); field.select(); }
         notify('Select and copy the recovered text below.');
       }
       break;
@@ -1000,6 +1098,16 @@ async function handleAction(action: string) {
 document.addEventListener('click', event => {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  const filterChoice = target.closest('[data-filter-tag]');
+  if (filterChoice instanceof HTMLButtonElement) {
+    const kind = filterChoice.dataset['filterTag'];
+    if ((kind !== 'note' && kind !== 'file') || kind !== tagFilterDialog) return;
+    const current = kind === 'note' ? noteTagFilter : fileTagFilter;
+    const next = current.includes(filterChoice.value) ? current.filter(tag => tag !== filterChoice.value) : [...current, filterChoice.value];
+    if (kind === 'note') { noteTagFilter = next; renderList(); }
+    else { fileTagFilter = next; renderFiles(); }
+    return;
+  }
   const action = target.closest('[data-action]')?.getAttribute('data-action');
   if (action !== null && action !== undefined) {
     // The scanner must remain cancellable while its promise is pending.
@@ -1026,6 +1134,8 @@ document.addEventListener('click', event => {
   if (tagFile !== undefined && tagFile !== null) { void perform(() => editTags('file', tagFile)); return; }
   const removeTag = target.closest('[data-remove-tag]')?.getAttribute('data-remove-tag');
   if (removeTag !== undefined && removeTag !== null) { void perform(() => changeTag(removeTag, false)); return; }
+  const addTag = target.closest('[data-add-tag]')?.getAttribute('data-add-tag');
+  if (addTag !== undefined && addTag !== null) { void perform(() => changeTag(addTag, true)); return; }
   const fileOpen = target.closest('[data-open-file]')?.getAttribute('data-open-file');
   if (fileOpen !== undefined && fileOpen !== null) {
     // A dismissed, slow preview must not keep the rest of the app locked.
@@ -1054,6 +1164,16 @@ document.addEventListener('click', event => {
   }
   if (target.closest('#save-state') !== null && draft?.dirty === true) void flushSave();
 });
+
+document.addEventListener('pointerdown', event => {
+  const target = event.target;
+  if (tagFilterDialog === null || !(target instanceof Element) || modalRoot.contains(target)) return;
+  const triggerId = tagFilterDialog === 'note' ? 'note-tag-filter' : 'file-tag-filter';
+  if (target.closest('#' + triggerId) === null) closeModal(false);
+});
+window.addEventListener('resize', positionTagFilter);
+window.visualViewport?.addEventListener('resize', positionTagFilter);
+window.visualViewport?.addEventListener('scroll', positionTagFilter);
 
 document.addEventListener('paste', event => {
   const networkId = snapshot.network?.id;
@@ -1094,11 +1214,6 @@ document.addEventListener('submit', event => {
 
 document.addEventListener('change', event => {
   const target = event.target;
-  if (target instanceof HTMLSelectElement) {
-    if (target.id === 'note-tag-filter') { noteTagFilter = target.value; renderList(); }
-    if (target.id === 'file-tag-filter') { fileTagFilter = target.value; renderFiles(); }
-    return;
-  }
   if (!(target instanceof HTMLInputElement) || target.id !== 'file-picker' || target.files === null) return;
   const files = Array.from(target.files);
   target.value = '';
@@ -1108,15 +1223,34 @@ document.addEventListener('change', event => {
 
 document.addEventListener('focusin', event => {
   const target = event.target;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
-  if (section !== 'notes' || draft === null || (target.id !== 'note-title' && target.id !== 'note-body')) return;
+  if (tagFilterDialog !== null && target instanceof Element && !modalRoot.contains(target) && target.id !== 'note-tag-filter' && target.id !== 'file-tag-filter') closeModal(false);
+  if (!(target instanceof HTMLElement) || section !== 'notes' || draft === null) return;
+  if (target.id !== 'note-title' && target.id !== 'note-body' && target.id !== 'note-markdown-preview') return;
   mobileEditor = true;
   target.closest('.notebook-shell')?.classList.add('editor-open');
+  setNoteMode('write');
+  if (target.id === 'note-markdown-preview') {
+    const body = document.querySelector('#note-body');
+    if (body instanceof HTMLTextAreaElement) body.focus({ preventScroll: true });
+  }
+});
+
+document.addEventListener('focusout', event => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || (target.id !== 'note-title' && target.id !== 'note-body')) return;
+  const next = event.relatedTarget;
+  if (next instanceof HTMLElement && (next.id === 'note-title' || next.id === 'note-body')) return;
+  // Wait for focus to settle so moving between title and body keeps editing.
+  setTimeout(() => {
+    const focused = document.activeElement;
+    if (focused?.id !== 'note-title' && focused?.id !== 'note-body') setNoteMode('preview');
+  }, 0);
 });
 
 document.addEventListener('input', event => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+  if (target.id === 'tag-name') { renderTagSuggestions(); return; }
   if (target.id === 'note-search') { noteQuery = target.value; renderList(); return; }
   if (draft === null || (target.id !== 'note-title' && target.id !== 'note-body')) return;
   draft[target.id === 'note-title' ? 'title' : 'body'] = target.value;
@@ -1135,6 +1269,16 @@ document.addEventListener('compositionend', () => {
 });
 
 document.addEventListener('keydown', event => {
+  if (tagFilterDialog !== null && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    const choices = [...modalRoot.querySelectorAll('.tag-filter-choice')].filter((element): element is HTMLButtonElement => element instanceof HTMLButtonElement);
+    if (choices.length > 0) {
+      const index = choices.findIndex(choice => choice === document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1 : event.key === 'ArrowDown' ? (index + 1) % choices.length : index < 0 ? choices.length - 1 : (index - 1 + choices.length) % choices.length;
+      event.preventDefault();
+      choices[next]?.focus();
+      return;
+    }
+  }
   if (native && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'v' && section === 'files' && modalRoot.firstElementChild === null && !recoveryPending) {
     const target = event.target;
     if (!(target instanceof Element) || target.closest('input, textarea, [contenteditable]') === null) {
@@ -1147,7 +1291,7 @@ document.addEventListener('keydown', event => {
     if (scanning) void handleAction('cancel-scan').catch(error => notify(errorText(error)));
     else closeModal();
   }
-  if (event.key === 'Tab' && modalRoot.firstElementChild !== null) {
+  if (event.key === 'Tab' && tagFilterDialog === null && modalRoot.firstElementChild !== null) {
     const focusable = [...modalRoot.querySelectorAll('button, input, textarea, [tabindex="0"]')].filter((node): node is HTMLElement => node instanceof HTMLElement && !node.hasAttribute('disabled'));
     const first = focusable[0];
     const last = focusable[focusable.length - 1];

@@ -52,6 +52,8 @@ test('preview editing, sharing, switching and restoring in the current session',
   await page.getByLabel('Invitation phrase').fill(invite);
   await page.getByRole('button', { name: 'Join network', exact: true }).click();
   await page.locator('[data-note]').filter({ hasText: 'Weekend plans' }).click();
+  await expect(page.getByRole('region', { name: 'Markdown preview' })).toHaveText('Bring tea and a notebook. 🍵');
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Bring tea and a notebook. 🍵');
   await page.getByRole('button', { name: 'Delete this note' }).click();
   await page.getByRole('button', { name: 'Delete note', exact: true }).click();

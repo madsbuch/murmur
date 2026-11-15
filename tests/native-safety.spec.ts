@@ -96,6 +96,7 @@ test('explicit save retry recovers after failed SQLite draft writes without anot
   await mockNative(page, { snapshot: initial, draft: null, failBackups: true });
   await page.goto('/');
   await page.locator('[data-note]').click();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await page.getByRole('textbox', { name: 'Note text' }).fill('Latest typing survives');
   await expect(page.locator('#save-state')).toHaveText('Not saved · tap to retry');
   expect((await state(page))['updates']).toBe(0);
@@ -110,7 +111,7 @@ test('explicit save retry recovers after failed SQLite draft writes without anot
 test('a malformed legacy backup does not prevent recovering the newer SQLite draft', async ({ page }) => {
   await mockNative(page, { snapshot: initial, draft: backup, legacy: '{malformed' });
   await page.goto('/');
-  await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Recovered typing');
+  await expect(page.getByRole('region', { name: 'Markdown preview' })).toHaveText('Recovered typing');
   await expect(page.locator('#save-state')).toContainText('Saved on device');
   expect(await page.evaluate(() => localStorage.getItem('murmur-unsaved-draft'))).toBe('{malformed');
   expect(parseSnapshot((await state(page))['snapshot']).notes[0]?.body).toBe('Recovered typing');
@@ -120,7 +121,7 @@ test('a draft whose original note was deleted remains visible and copyable', asy
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await mockNative(page, { snapshot: { ...initial, notes: [] }, draft: backup });
   await page.goto('/');
-  await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Recovered typing');
+  await expect(page.getByRole('region', { name: 'Markdown preview' })).toHaveText('Recovered typing');
   await expect(page.locator('#save-state')).toHaveText('Original note deleted · draft recovered');
   await page.getByRole('button', { name: 'Copy recovered text', exact: true }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('Recovered title\n\nRecovered typing');
@@ -134,16 +135,17 @@ test('editing stays gated until delayed SQLite recovery completes', async ({ pag
   await page.keyboard.press('Escape');
   await expect(page.locator('#app')).toHaveJSProperty('inert', true);
   await page.locator('[data-note]').click({ force: true });
-  await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveCount(0);
+  await expect(page.getByLabel('Note text')).toHaveCount(0);
   await page.evaluate(() => window.dispatchEvent(new Event('release-test-recovery')));
   await expect(page.locator('#app')).toHaveJSProperty('inert', false);
-  await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue('Recovered typing');
+  await expect(page.getByRole('region', { name: 'Markdown preview' })).toHaveText('Recovered typing');
 });
 
 test('failed cleanup after a committed note remains explicitly retryable', async ({ page }) => {
   await mockNative(page, { snapshot: initial, draft: null, failClearOnce: true });
   await page.goto('/');
   await page.locator('[data-note]').click();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await page.getByRole('textbox', { name: 'Note text' }).fill('Committed typing');
   await expect(page.locator('#save-state')).toHaveText('Not saved · tap to retry');
   expect(parseSnapshot((await state(page))['snapshot']).notes[0]?.body).toBe('Committed typing');
@@ -157,6 +159,7 @@ test('explicit deletion remains available after a failed recovery write', async 
   await mockNative(page, { snapshot: initial, draft: null, failBackups: true });
   await page.goto('/');
   await page.locator('[data-note]').click();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await page.getByRole('textbox', { name: 'Note text' }).fill('Discard this typing');
   await expect(page.locator('#save-state')).toHaveText('Not saved · tap to retry');
   await page.getByRole('button', { name: 'Delete this note', exact: true }).click();
@@ -171,6 +174,7 @@ test('native startup and editing work without newer preview-only browser APIs', 
   await page.goto('/');
   await expect(page.locator('[data-note]')).toHaveCount(1);
   await page.locator('[data-note]').click();
+  await page.getByRole('region', { name: 'Markdown preview' }).click();
   await page.getByLabel('Note text').fill('Compatible native editing');
   await expect(page.locator('#save-state')).toContainText('Saved on device');
   expect(parseSnapshot((await state(page))['snapshot']).notes[0]?.body).toBe('Compatible native editing');

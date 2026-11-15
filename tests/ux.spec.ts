@@ -257,7 +257,7 @@ for (const height of [200, 150]) {
     await expect(page.locator('#save-state')).toContainText('Saved for this session');
     // Wide layouts retain the selected editor after returning to Notes.
     await page.getByRole('button', { name: 'Notes', exact: true }).click();
-    await page.getByLabel('Note text').click();
+    await page.getByRole('region', { name: 'Markdown preview' }).click();
     await expect(page.locator('.notebook-shell')).toHaveClass(/editor-open/);
     await page.setViewportSize({ width: 960, height });
     await expect(page.locator('.topbar')).toBeHidden();
